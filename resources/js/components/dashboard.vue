@@ -1,8 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import logo from '../assets/logo.jpg'
-
 
 /*
 |--------------------------------------------------------------------------
@@ -44,6 +43,35 @@ const units = [
 */
 const inventory = ref([])
 const isSaving = ref(false)
+
+/*
+|--------------------------------------------------------------------------
+| Inventory Registration History
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| registeredItems is completely separate from inventory.
+|
+| It contains snapshots returned from:
+|
+| GET /inventory/registration-history?date=YYYY-MM-DD
+|
+| Therefore changing inventory.quantity cannot change history.quantity.
+|
+|--------------------------------------------------------------------------
+*/
+function getLocalDateString(date = new Date()) {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+
+    return `${year}-${month}-${day}`
+}
+
+const selectedRegistrationDate = ref(getLocalDateString())
+const registeredItems = ref([])
+const registrationLoading = ref(false)
+const registrationError = ref('')
 
 /*
 |--------------------------------------------------------------------------
@@ -134,9 +162,12 @@ const filteredInventory = computed(() => {
     const searchValue = search.value.toLowerCase().trim()
 
     return sortedInventory.value.filter((item) => {
+        const itemName = String(item.name || '').toLowerCase()
+        const propertyNo = String(item.propertyNo || '').toLowerCase()
+
         const matchesSearch =
-            item.name.toLowerCase().includes(searchValue) ||
-            item.propertyNo.toLowerCase().includes(searchValue)
+            itemName.includes(searchValue) ||
+            propertyNo.includes(searchValue)
 
         const matchesCategory =
             categoryFilter.value === 'ALL' ||
@@ -164,13 +195,18 @@ const totalItems = computed(() => inventory.value.length)
 const totalValue = computed(() =>
     inventory.value
         .filter((item) => item.quantity > 0)
-        .reduce((total, item) => total + item.quantity * item.unitCost, 0),
+        .reduce(
+            (total, item) =>
+                total + item.quantity * item.unitCost,
+            0,
+        ),
 )
 
 const lowStockCount = computed(() =>
     inventory.value.filter(
         (item) =>
-            item.quantity > 0 && item.quantity <= item.reorderLevel,
+            item.quantity > 0 &&
+            item.quantity <= item.reorderLevel,
     ).length,
 )
 
@@ -192,13 +228,18 @@ function formatPeso(amount) {
         style: 'currency',
         currency: 'PHP',
         minimumFractionDigits: 2,
-    }).format(amount)
+    }).format(Number(amount) || 0)
 }
 
 function itemImage(item) {
-    return item.image || DEFAULT_IMAGE
+    return item?.image || DEFAULT_IMAGE
 }
 
+/*
+|--------------------------------------------------------------------------
+| Current Inventory API Mapper
+|--------------------------------------------------------------------------
+*/
 function fromApi(item) {
     return {
         id: item.id,
@@ -210,6 +251,7 @@ function fromApi(item) {
         reorderLevel: Number(item.reorder_level) || 1,
         unitCost: Number(item.unit_cost) || 0,
         image: item.image || DEFAULT_IMAGE,
+        createdAt: item.created_at || null,
     }
 }
 
@@ -223,6 +265,60 @@ function toApi(item) {
         reorder_level: Number(item.reorderLevel) || 1,
         unit_cost: Number(item.unitCost) || 0,
         image: item.image || null,
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Historical Registration API Mapper
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| registered_qty from the database becomes quantity ONLY inside
+| the history object.
+|
+| This is NOT the current inventory quantity.
+|
+|--------------------------------------------------------------------------
+*/
+function fromHistoryApi(item) {
+    return {
+        id: item.id,
+
+        propertyNo: item.property_no,
+
+        name: item.name,
+
+        category: item.category,
+
+        unit: item.unit,
+
+        /*
+        |--------------------------------------------------------------------------
+        | IMMUTABLE HISTORICAL QUANTITY
+        |--------------------------------------------------------------------------
+        */
+        quantity: Number(item.registered_qty) || 0,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Keep a separate explicit field too.
+        |--------------------------------------------------------------------------
+        */
+        registeredQty: Number(item.registered_qty) || 0,
+
+        reorderLevel: Number(item.reorder_level) || 1,
+
+        unitCost: Number(item.unit_cost) || 0,
+
+        image: item.image || DEFAULT_IMAGE,
+
+        registeredDate:
+            item.registered_date || null,
+
+        registeredAt:
+            item.registered_at || item.created_at || null,
     }
 }
 
@@ -240,25 +336,134 @@ function apiErrorMessage(error, fallback) {
     return error.response?.data?.message || fallback
 }
 
+/*
+|--------------------------------------------------------------------------
+| Load Current Inventory
+|--------------------------------------------------------------------------
+*/
 async function loadInventory() {
     try {
         const { data } = await axios.get('/inventory')
+
         inventory.value = (data || []).map(fromApi)
+
+        /*
+        |--------------------------------------------------------------------------
+        | History is loaded independently from inventory.
+        |--------------------------------------------------------------------------
+        */
+        await loadRegisteredItemsByDate(
+            selectedRegistrationDate.value,
+        )
     } catch (error) {
         showToast(
             'Load Failed',
-            apiErrorMessage(error, 'Could not load inventory from the database.'),
+            apiErrorMessage(
+                error,
+                'Could not load inventory from the database.',
+            ),
             'danger',
         )
     }
 }
+
+/*
+|--------------------------------------------------------------------------
+| Load Registration History
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| Never use inventory.value here.
+|
+| History comes from the dedicated database table.
+|
+|--------------------------------------------------------------------------
+*/
+async function loadRegisteredItemsByDate(
+    date = selectedRegistrationDate.value,
+) {
+    if (!date) {
+        registeredItems.value = []
+        return
+    }
+
+    registrationLoading.value = true
+    registrationError.value = ''
+
+    try {
+        const { data } = await axios.get(
+            '/inventory/registration-history',
+            {
+                params: {
+                    date,
+                },
+            },
+        )
+
+        registeredItems.value = (data || [])
+            .map(fromHistoryApi)
+            .sort((a, b) => {
+                const first =
+                    new Date(a.registeredAt || 0).getTime()
+
+                const second =
+                    new Date(b.registeredAt || 0).getTime()
+
+                return first - second
+            })
+    } catch (error) {
+        console.error(
+            'Failed to load registration history:',
+            error,
+        )
+
+        registeredItems.value = []
+
+        registrationError.value = apiErrorMessage(
+            error,
+            'Unable to load registration history.',
+        )
+    } finally {
+        registrationLoading.value = false
+    }
+}
+
+const formattedRegistrationDate = computed(() => {
+    if (!selectedRegistrationDate.value) return ''
+
+    const [year, month, day] =
+        selectedRegistrationDate.value.split('-')
+
+    const date = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+    )
+
+    return date.toLocaleDateString('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+    })
+})
+
+const registrationCount = computed(
+    () => registeredItems.value.length,
+)
+
+watch(selectedRegistrationDate, (newDate) => {
+    loadRegisteredItemsByDate(newDate)
+})
 
 onMounted(() => {
     loadInventory()
 })
 
 function isLowStock(item) {
-    return item.quantity > 0 && item.quantity <= item.reorderLevel
+    return (
+        item.quantity > 0 &&
+        item.quantity <= item.reorderLevel
+    )
 }
 
 /*
@@ -338,34 +543,66 @@ function closeAddItemModal() {
 async function handleAddItem() {
     if (isSaving.value) return
 
+    const quantity = Number(addForm.value.quantity)
+
+    if (Number.isNaN(quantity) || quantity < 0) {
+        showToast(
+            'Invalid Quantity',
+            'Please enter a valid quantity.',
+            'danger',
+        )
+        return
+    }
+
     const payload = toApi({
         name: addForm.value.name.trim(),
         propertyNo: addForm.value.propertyNo.trim(),
         category: addForm.value.category,
         unit: addForm.value.unit,
-        quantity: Number(addForm.value.quantity) || 0,
-        reorderLevel: Number(addForm.value.reorderLevel) || 5,
-        unitCost: Number(addForm.value.unitCost) || 0,
+        quantity,
+        reorderLevel:
+            Number(addForm.value.reorderLevel) || 5,
+        unitCost:
+            Number(addForm.value.unitCost) || 0,
         image: addForm.value.image || '',
     })
 
     isSaving.value = true
 
     try {
-        const { data } = await axios.post('/inventory', payload)
-        inventory.value.push(fromApi(data.data))
+        const { data } = await axios.post(
+            '/inventory',
+            payload,
+        )
+
+        const newItem = fromApi(data.data)
+
+        inventory.value.push(newItem)
+
+        /*
+        |--------------------------------------------------------------------------
+        | Reload history because the backend created a permanent
+        | historical snapshot at registration time.
+        |--------------------------------------------------------------------------
+        */
+        await loadRegisteredItemsByDate(
+            selectedRegistrationDate.value,
+        )
 
         closeAddItemModal()
 
         showToast(
             'Item Registered',
-            `Successfully added "${data.data.name}" to inventory.`,
+            `Successfully added "${data.data.name}" to inventory with an original quantity of ${quantity}.`,
             'success',
         )
     } catch (error) {
         showToast(
             'Save Failed',
-            apiErrorMessage(error, 'Could not save the item to the database.'),
+            apiErrorMessage(
+                error,
+                'Could not save the item to the database.',
+            ),
             'danger',
         )
     } finally {
@@ -375,13 +612,26 @@ async function handleAddItem() {
 
 /*
 |--------------------------------------------------------------------------
-| Quick Quantity Adjustment
+| Persist Current Inventory
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| This only updates the current inventory table.
+| It never changes registration history.
+|
 |--------------------------------------------------------------------------
 */
 async function persistItem(item) {
-    const { data } = await axios.put(`/inventory/${item.id}`, toApi(item))
+    const { data } = await axios.put(
+        `/inventory/${item.id}`,
+        toApi(item),
+    )
+
     const mapped = fromApi(data.data)
-    const index = inventory.value.findIndex((row) => row.id === item.id)
+
+    const index = inventory.value.findIndex(
+        (row) => row.id === item.id,
+    )
 
     if (index !== -1) {
         inventory.value[index] = mapped
@@ -390,8 +640,20 @@ async function persistItem(item) {
     return mapped
 }
 
+/*
+|--------------------------------------------------------------------------
+| Quick Quantity Adjustment
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| No history update is performed here.
+|
+|--------------------------------------------------------------------------
+*/
 async function quickAdjustQty(id, change) {
-    const item = inventory.value.find((item) => item.id === id)
+    const item = inventory.value.find(
+        (item) => item.id === id,
+    )
 
     if (!item) return
 
@@ -406,11 +668,16 @@ async function quickAdjustQty(id, change) {
         await persistItem(item)
     } catch (error) {
         item.quantity = previousQty
+
         showToast(
             'Update Failed',
-            apiErrorMessage(error, 'Could not update quantity in the database.'),
+            apiErrorMessage(
+                error,
+                'Could not update quantity in the database.',
+            ),
             'danger',
         )
+
         return
     }
 
@@ -423,7 +690,7 @@ async function quickAdjustQty(id, change) {
     } else {
         showToast(
             'Quantity Updated',
-            `Updated stock for "${item.name}" to ${newQty}.`,
+            `Updated current stock for "${item.name}" to ${newQty}.`,
             'info',
         )
     }
@@ -435,7 +702,9 @@ async function quickAdjustQty(id, change) {
 |--------------------------------------------------------------------------
 */
 function openUpdateQtyModal(id) {
-    const item = inventory.value.find((item) => item.id === id)
+    const item = inventory.value.find(
+        (item) => item.id === id,
+    )
 
     if (!item) return
 
@@ -474,23 +743,46 @@ async function saveQtyUpdate() {
 
     const newQty = Number(updateQuantity.value)
 
-    if (Number.isNaN(newQty) || newQty < 0) return
+    if (
+        Number.isNaN(newQty) ||
+        newQty < 0
+    ) {
+        return
+    }
 
     const previousQty = item.quantity
+
     item.quantity = newQty
     isSaving.value = true
 
     try {
         const saved = await persistItem(item)
+
         closeUpdateQtyModal()
 
-        if (previousQty === 0 && saved.quantity > 0) {
+        /*
+        |--------------------------------------------------------------------------
+        | IMPORTANT:
+        |
+        | Do NOT reload registration history from inventory.
+        |
+        | The history endpoint reads registered_qty from the
+        | immutable history table, so the original quantity remains.
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            previousQty === 0 &&
+            saved.quantity > 0
+        ) {
             showToast(
                 'Item Restocked!',
                 `"${saved.name}" has been replenished and moved back to Available Stock.`,
                 'success',
             )
-        } else if (saved.quantity === 0) {
+        } else if (
+            saved.quantity === 0
+        ) {
             showToast(
                 'Item Depleted',
                 `"${saved.name}" quantity set to 0 and moved to Out of Stock.`,
@@ -499,15 +791,19 @@ async function saveQtyUpdate() {
         } else {
             showToast(
                 'Stock Saved',
-                `Updated quantity for "${saved.name}" to ${saved.quantity}.`,
+                `Updated current quantity for "${saved.name}" to ${saved.quantity}. Registration history remains unchanged.`,
                 'info',
             )
         }
     } catch (error) {
         item.quantity = previousQty
+
         showToast(
             'Update Failed',
-            apiErrorMessage(error, 'Could not update quantity in the database.'),
+            apiErrorMessage(
+                error,
+                'Could not update the quantity in the database.',
+            ),
             'danger',
         )
     } finally {
@@ -521,7 +817,9 @@ async function saveQtyUpdate() {
 |--------------------------------------------------------------------------
 */
 function openEditItemModal(id) {
-    const item = inventory.value.find((item) => item.id === id)
+    const item = inventory.value.find(
+        (item) => item.id === id,
+    )
 
     if (!item) return
 
@@ -539,7 +837,8 @@ function openEditItemModal(id) {
         image: item.image || '',
     }
 
-    currentModalImageData.value = item.image || ''
+    currentModalImageData.value =
+        item.image || ''
 
     showEditModal.value = true
 }
@@ -559,12 +858,16 @@ async function handleSaveEditItem() {
     const snapshot = { ...item }
 
     item.name = editForm.value.name.trim()
-    item.propertyNo = editForm.value.propertyNo.trim()
+    item.propertyNo =
+        editForm.value.propertyNo.trim()
     item.category = editForm.value.category
     item.unit = editForm.value.unit
-    item.quantity = Number(editForm.value.quantity) || 0
-    item.reorderLevel = Number(editForm.value.reorderLevel) || 1
-    item.unitCost = Number(editForm.value.unitCost) || 0
+    item.quantity =
+        Number(editForm.value.quantity) || 0
+    item.reorderLevel =
+        Number(editForm.value.reorderLevel) || 1
+    item.unitCost =
+        Number(editForm.value.unitCost) || 0
 
     if (editForm.value.image) {
         item.image = editForm.value.image
@@ -574,17 +877,23 @@ async function handleSaveEditItem() {
 
     try {
         const saved = await persistItem(item)
+
         closeEditItemModal()
+
         showToast(
             'Changes Saved',
-            `Updated details for "${saved.name}".`,
+            `Updated current details for "${saved.name}". Original registration history remains unchanged.`,
             'success',
         )
     } catch (error) {
         Object.assign(item, snapshot)
+
         showToast(
             'Update Failed',
-            apiErrorMessage(error, 'Could not update the item in the database.'),
+            apiErrorMessage(
+                error,
+                'Could not update the item in the database.',
+            ),
             'danger',
         )
     } finally {
@@ -592,33 +901,63 @@ async function handleSaveEditItem() {
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| Delete Current Item
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| The inventory can be deleted while its registration history remains.
+|
+|--------------------------------------------------------------------------
+*/
 async function deleteCurrentItem() {
     const id = activeEditingId.value
 
     if (!id || isSaving.value) return
 
-    const item = inventory.value.find((item) => item.id === id)
+    const item = inventory.value.find(
+        (item) => item.id === id,
+    )
 
     if (!item) return
 
     const itemName = item.name
+
     isSaving.value = true
 
     try {
         await axios.delete(`/inventory/${id}`)
+
         inventory.value = inventory.value.filter(
             (row) => row.id !== id,
         )
+
+        /*
+        |--------------------------------------------------------------------------
+        | Reload history from database.
+        |
+        | It should still exist even after inventory deletion.
+        |--------------------------------------------------------------------------
+        */
+        await loadRegisteredItemsByDate(
+            selectedRegistrationDate.value,
+        )
+
         closeEditItemModal()
+
         showToast(
             'Item Deleted',
-            `Removed "${itemName}" from government database.`,
+            `Removed "${itemName}" from current inventory. Registration history was preserved.`,
             'danger',
         )
     } catch (error) {
         showToast(
             'Delete Failed',
-            apiErrorMessage(error, 'Could not delete the item from the database.'),
+            apiErrorMessage(
+                error,
+                'Could not delete the item from the database.',
+            ),
             'danger',
         )
     } finally {
@@ -653,13 +992,12 @@ function handleImageError(event) {
                 <div class="flex items-center justify-between h-20">
 
                     <div class="flex items-center space-x-4">
-                        
-                             <img
-        :src="logo"
-        alt="Logo"
-        class="w-20 h-20 rounded-full object-cover border-2 border-white shadow-lg"
-    />
-                        
+
+                        <img
+                            :src="logo"
+                            alt="Logo"
+                            class="w-20 h-20 rounded-full object-cover border-2 border-white shadow-lg"
+                        />
 
                         <div>
                             <div class="flex items-center space-x-2">
@@ -882,13 +1220,213 @@ function handleImageError(event) {
             </div>
 
             <!-- =====================================================
+                 INVENTORY REGISTRATION HISTORY
+            ====================================================== -->
+            <section
+                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
+            >
+                <div
+                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
+                >
+                    <div
+                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
+                    >
+                        <div>
+                            <div class="flex items-center space-x-2">
+                                <div
+                                    class="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center"
+                                >
+                                    <i class="fa-solid fa-calendar-days"></i>
+                                </div>
+
+                                <div>
+                                    <h2 class="text-lg font-bold text-slate-800">
+                                        Inventory Registration History
+                                    </h2>
+
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        View all inventory items registered on a specific date.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                            <label
+                                for="registration-date"
+                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
+                            >
+                                Select Date
+                            </label>
+
+                            <div class="relative">
+                                <i
+                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-purple-500 text-sm pointer-events-none"
+                                ></i>
+
+                                <input
+                                    id="registration-date"
+                                    v-model="selectedRegistrationDate"
+                                    type="date"
+                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    class="px-5 sm:px-6 py-4 border-b border-slate-100 bg-purple-50/40"
+                >
+                    <div
+                        class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                    >
+                        <div>
+                            <p class="text-xs font-bold uppercase tracking-wider text-purple-600">
+                                Registered Items
+                            </p>
+
+                            <h3 class="text-lg sm:text-xl font-black text-slate-800 mt-0.5">
+                                Items Registered on {{ formattedRegistrationDate }}
+                            </h3>
+                        </div>
+
+                        <div
+                            class="inline-flex items-center self-start sm:self-auto gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
+                        >
+                            <i class="fa-solid fa-box-open text-purple-600"></i>
+
+                            <span class="text-sm font-bold">
+                                {{ registrationCount }}
+                                {{ registrationCount === 1 ? 'Item' : 'Items' }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    v-if="registrationLoading"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 text-purple-600 mb-3"
+                    >
+                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-slate-600">
+                        Loading registered items...
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="registrationError"
+                    class="px-6 py-10 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
+                    >
+                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-rose-700">
+                        {{ registrationError }}
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="registeredItems.length === 0"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
+                    >
+                        <i class="fa-solid fa-calendar-xmark text-2xl"></i>
+                    </div>
+
+                    <h3 class="text-base font-bold text-slate-700">
+                        No Items Registered
+                    </h3>
+
+                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
+                        No inventory items were registered on {{ formattedRegistrationDate }}.
+                    </p>
+                </div>
+
+                <div v-else class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200">
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Qty
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Property Number
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Item Name
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="item in registeredItems"
+                                :key="item.id"
+                                class="hover:bg-purple-50/40 transition-colors"
+                            >
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span
+                                        class="inline-flex items-center justify-center min-w-[42px] px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 text-sm font-black border border-purple-200"
+                                    >
+                                        {{ item.registeredQty }}
+                                    </span>
+
+                                    <span class="ml-2 text-xs text-slate-400">
+                                        {{ item.unit }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span class="font-mono text-sm font-bold text-slate-700">
+                                        {{ item.propertyNo }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4">
+                                    <div class="flex items-center gap-3">
+                                        <img
+                                            :src="itemImage(item)"
+                                            :alt="item.name"
+                                            @error="handleImageError"
+                                            class="w-10 h-10 rounded-lg object-cover border border-slate-200 bg-slate-50"
+                                        />
+
+                                        <div>
+                                            <p class="text-sm font-bold text-slate-800">
+                                                {{ item.name }}
+                                            </p>
+
+                                            <p class="text-xs text-slate-400 mt-0.5">
+                                                {{ item.category }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- =====================================================
                  AVAILABLE INVENTORY
             ====================================================== -->
             <section
                 class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
             >
-
-                <!-- TOOLBAR -->
                 <div
                     class="p-5 sm:p-6 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-slate-50/50"
                 >
@@ -914,12 +1452,9 @@ function handleImageError(event) {
                         </p>
                     </div>
 
-                    <!-- CONTROLS -->
                     <div
                         class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
                     >
-
-                        <!-- SEARCH -->
                         <div class="relative flex-1 sm:w-64">
                             <i
                                 class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"
@@ -933,7 +1468,6 @@ function handleImageError(event) {
                             />
                         </div>
 
-                        <!-- CATEGORY -->
                         <select
                             v-model="categoryFilter"
                             class="py-2 px-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all shadow-sm"
@@ -959,7 +1493,6 @@ function handleImageError(event) {
                             </option>
                         </select>
 
-                        <!-- VIEW TOGGLE -->
                         <div
                             class="flex items-center bg-slate-200/80 p-1 rounded-xl"
                         >
@@ -990,9 +1523,7 @@ function handleImageError(event) {
                     </div>
                 </div>
 
-                <!-- =================================================
-                     TABLE VIEW
-                ================================================== -->
+                <!-- TABLE VIEW -->
                 <div
                     v-if="viewMode === 'table'"
                     class="overflow-x-auto"
@@ -1005,24 +1536,31 @@ function handleImageError(event) {
                                 <th class="py-3.5 px-4 text-center">
                                     Image
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Property / Article No.
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Item Description
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Category
                                 </th>
+
                                 <th class="py-3.5 px-4 text-right">
                                     Unit Cost
                                 </th>
+
                                 <th class="py-3.5 px-4 text-center">
                                     Available Stock
                                 </th>
+
                                 <th class="py-3.5 px-4 text-center">
                                     Status
                                 </th>
+
                                 <th class="py-3.5 px-4 text-right">
                                     Actions
                                 </th>
@@ -1038,8 +1576,6 @@ function handleImageError(event) {
                                 :key="item.id"
                                 class="hover:bg-slate-50/80 transition-colors border-b border-slate-100"
                             >
-
-                                <!-- IMAGE -->
                                 <td class="py-3 px-4 text-center">
                                     <img
                                         :src="itemImage(item)"
@@ -1049,14 +1585,12 @@ function handleImageError(event) {
                                     />
                                 </td>
 
-                                <!-- PROPERTY -->
                                 <td
                                     class="py-3 px-4 font-mono text-xs font-black text-purple-900"
                                 >
                                     {{ item.propertyNo }}
                                 </td>
 
-                                <!-- NAME -->
                                 <td class="py-3 px-4">
                                     <div
                                         class="font-bold text-slate-800 text-sm"
@@ -1068,11 +1602,15 @@ function handleImageError(event) {
                                         class="text-[11px] text-slate-400"
                                     >
                                         Total Value:
-                                        {{ formatPeso(item.quantity * item.unitCost) }}
+                                        {{
+                                            formatPeso(
+                                                item.quantity *
+                                                item.unitCost
+                                            )
+                                        }}
                                     </div>
                                 </td>
 
-                                <!-- CATEGORY -->
                                 <td class="py-3 px-4">
                                     <span
                                         class="inline-block px-2.5 py-1 text-xs font-semibold bg-slate-100 text-slate-600 rounded-lg border border-slate-200"
@@ -1081,14 +1619,12 @@ function handleImageError(event) {
                                     </span>
                                 </td>
 
-                                <!-- COST -->
                                 <td
                                     class="py-3 px-4 text-right font-semibold text-slate-700 text-sm"
                                 >
                                     {{ formatPeso(item.unitCost) }}
                                 </td>
 
-                                <!-- STOCK -->
                                 <td class="py-3 px-4 text-center">
                                     <span
                                         :class="
@@ -1107,7 +1643,6 @@ function handleImageError(event) {
                                     </span>
                                 </td>
 
-                                <!-- STATUS -->
                                 <td class="py-3 px-4 text-center">
                                     <span
                                         v-if="isLowStock(item)"
@@ -1130,7 +1665,6 @@ function handleImageError(event) {
                                     </span>
                                 </td>
 
-                                <!-- ACTIONS -->
                                 <td
                                     class="py-3 px-4 text-right whitespace-nowrap"
                                 >
@@ -1139,7 +1673,9 @@ function handleImageError(event) {
                                         title="Quick Add +1"
                                         class="p-1.5 text-slate-600 hover:text-purple-700 hover:bg-purple-100/70 rounded-lg transition-colors"
                                     >
-                                        <i class="fa-solid fa-plus text-xs"></i>
+                                        <i
+                                            class="fa-solid fa-plus text-xs"
+                                        ></i>
                                     </button>
 
                                     <button
@@ -1147,7 +1683,9 @@ function handleImageError(event) {
                                         title="Quick Deduct -1"
                                         class="p-1.5 text-slate-600 hover:text-rose-700 hover:bg-rose-100/70 rounded-lg transition-colors"
                                     >
-                                        <i class="fa-solid fa-minus text-xs"></i>
+                                        <i
+                                            class="fa-solid fa-minus text-xs"
+                                        ></i>
                                     </button>
 
                                     <button
@@ -1172,11 +1710,12 @@ function handleImageError(event) {
                     </table>
                 </div>
 
-                <!-- =================================================
-                     GRID VIEW
-                ================================================== -->
+                <!-- GRID VIEW -->
                 <div
-                    v-if="viewMode === 'grid' && availableItems.length"
+                    v-if="
+                        viewMode === 'grid' &&
+                        availableItems.length
+                    "
                     class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"
                 >
                     <div
@@ -1185,7 +1724,6 @@ function handleImageError(event) {
                         class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-4 hover:shadow-md transition-shadow relative flex flex-col justify-between"
                     >
                         <div>
-
                             <div
                                 class="relative h-36 rounded-xl overflow-hidden bg-slate-100 border border-slate-200/60 mb-3"
                             >
@@ -1202,7 +1740,9 @@ function handleImageError(event) {
                                     {{ item.propertyNo }}
                                 </span>
 
-                                <div class="absolute bottom-2 right-2">
+                                <div
+                                    class="absolute bottom-2 right-2"
+                                >
                                     <span
                                         v-if="isLowStock(item)"
                                         class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200"
@@ -1317,7 +1857,6 @@ function handleImageError(event) {
                     class="p-5 sm:p-6 bg-rose-50/50 border-b border-rose-100 flex items-center justify-between"
                 >
                     <div class="flex items-center space-x-3">
-
                         <div
                             class="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center text-lg font-bold border border-rose-200/80"
                         >
@@ -1328,7 +1867,6 @@ function handleImageError(event) {
 
                         <div>
                             <div class="flex items-center space-x-2">
-
                                 <h2
                                     class="text-lg font-bold text-slate-800"
                                 >
@@ -1362,21 +1900,27 @@ function handleImageError(event) {
                                 <th class="py-3.5 px-4 text-center">
                                     Image
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Property / Article No.
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Item Description
                                 </th>
+
                                 <th class="py-3.5 px-4">
                                     Category
                                 </th>
+
                                 <th class="py-3.5 px-4 text-right">
                                     Unit Cost
                                 </th>
+
                                 <th class="py-3.5 px-4 text-center">
                                     Status
                                 </th>
+
                                 <th class="py-3.5 px-4 text-right">
                                     Quick Restock Action
                                 </th>
@@ -1391,7 +1935,6 @@ function handleImageError(event) {
                                 :key="item.id"
                                 class="hover:bg-rose-50/30 transition-colors border-b border-slate-100"
                             >
-
                                 <td class="py-3 px-4 text-center">
                                     <img
                                         :src="itemImage(item)"
@@ -1521,8 +2064,6 @@ function handleImageError(event) {
             <div
                 class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col"
             >
-
-                <!-- HEADER -->
                 <div
                     class="bg-gradient-to-r from-purple-900 to-purple-800 px-6 py-4 text-white flex justify-between items-center shadow-md"
                 >
@@ -1557,13 +2098,10 @@ function handleImageError(event) {
                     </button>
                 </div>
 
-                <!-- FORM -->
                 <form
                     @submit.prevent="handleAddItem"
                     class="p-6 space-y-5 overflow-y-auto flex-1"
                 >
-
-                    <!-- IMAGE -->
                     <div
                         class="bg-slate-50 p-4 rounded-2xl border border-slate-200/80"
                     >
@@ -1647,7 +2185,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- NAME -->
                     <div>
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
@@ -1664,7 +2201,6 @@ function handleImageError(event) {
                         />
                     </div>
 
-                    <!-- PROPERTY + CATEGORY -->
                     <div
                         class="grid grid-cols-1 sm:grid-cols-2 gap-4"
                     >
@@ -1707,7 +2243,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- UNIT / QTY / REORDER -->
                     <div
                         class="grid grid-cols-1 sm:grid-cols-3 gap-4"
                     >
@@ -1766,7 +2301,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- COST -->
                     <div>
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
@@ -1784,7 +2318,6 @@ function handleImageError(event) {
                         />
                     </div>
 
-                    <!-- BUTTONS -->
                     <div
                         class="pt-4 flex justify-end space-x-3 border-t border-slate-100"
                     >
@@ -1802,7 +2335,11 @@ function handleImageError(event) {
                             class="px-6 py-2.5 bg-gradient-to-r from-purple-700 to-purple-600 hover:from-purple-600 hover:to-purple-500 text-white rounded-xl text-xs font-bold shadow-md transition-all disabled:opacity-60"
                         >
                             <i class="fa-solid fa-check mr-1.5"></i>
-                            {{ isSaving ? 'Saving...' : 'Save & Register Item' }}
+                            {{
+                                isSaving
+                                    ? 'Saving...'
+                                    : 'Save & Register Item'
+                            }}
                         </button>
                     </div>
                 </form>
@@ -1844,8 +2381,6 @@ function handleImageError(event) {
                 </div>
 
                 <div class="p-6">
-
-                    <!-- ITEM PREVIEW -->
                     <div
                         class="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 mb-5 flex items-center space-x-4"
                     >
@@ -1874,9 +2409,7 @@ function handleImageError(event) {
                             >
                                 <span>
                                     Unit:
-                                    <strong
-                                        class="text-slate-700"
-                                    >
+                                    <strong class="text-slate-700">
                                         {{ activeUpdateItem.unit }}
                                     </strong>
                                 </span>
@@ -1885,9 +2418,7 @@ function handleImageError(event) {
 
                                 <span>
                                     Reorder limit:
-                                    <strong
-                                        class="text-slate-700"
-                                    >
+                                    <strong class="text-slate-700">
                                         {{ activeUpdateItem.reorderLevel }}
                                     </strong>
                                 </span>
@@ -1895,7 +2426,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- QUANTITY -->
                     <div class="space-y-4">
                         <label
                             class="block text-xs font-extrabold text-slate-600 uppercase tracking-wider text-center"
@@ -1946,7 +2476,6 @@ function handleImageError(event) {
                             </button>
                         </div>
 
-                        <!-- MOVEMENT -->
                         <p
                             v-if="Number(updateQuantity) === 0"
                             class="text-xs text-center text-rose-700 bg-rose-50 p-2.5 rounded-xl border border-rose-200 font-bold"
@@ -1968,7 +2497,6 @@ function handleImageError(event) {
                         </p>
                     </div>
 
-                    <!-- BUTTONS -->
                     <div
                         class="mt-6 pt-4 flex justify-end space-x-3 border-t border-slate-100"
                     >
@@ -2003,8 +2531,6 @@ function handleImageError(event) {
             <div
                 class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col"
             >
-
-                <!-- HEADER -->
                 <div
                     class="bg-gradient-to-r from-purple-900 to-purple-800 px-6 py-4 text-white flex justify-between items-center"
                 >
@@ -2028,13 +2554,10 @@ function handleImageError(event) {
                     </button>
                 </div>
 
-                <!-- FORM -->
                 <form
                     @submit.prevent="handleSaveEditItem"
                     class="p-6 space-y-4 overflow-y-auto flex-1"
                 >
-
-                    <!-- IMAGE -->
                     <div
                         class="bg-slate-50 p-4 rounded-2xl border border-slate-200/80"
                     >
@@ -2093,7 +2616,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- NAME -->
                     <div>
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
@@ -2109,7 +2631,6 @@ function handleImageError(event) {
                         />
                     </div>
 
-                    <!-- PROPERTY + CATEGORY -->
                     <div
                         class="grid grid-cols-1 sm:grid-cols-2 gap-4"
                     >
@@ -2151,7 +2672,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- UNIT / QUANTITY / REORDER -->
                     <div
                         class="grid grid-cols-1 sm:grid-cols-3 gap-4"
                     >
@@ -2210,7 +2730,6 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <!-- COST -->
                     <div>
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
@@ -2228,7 +2747,6 @@ function handleImageError(event) {
                         />
                     </div>
 
-                    <!-- BUTTONS -->
                     <div
                         class="pt-4 flex justify-between items-center border-t border-slate-100"
                     >
@@ -2237,9 +2755,7 @@ function handleImageError(event) {
                             @click="deleteCurrentItem"
                             class="px-4 py-2 text-rose-600 hover:bg-rose-50 rounded-xl text-xs font-bold transition-colors flex items-center space-x-1"
                         >
-                            <i
-                                class="fa-solid fa-trash-can"
-                            ></i>
+                            <i class="fa-solid fa-trash-can"></i>
 
                             <span>
                                 Delete Item
@@ -2284,8 +2800,6 @@ function handleImageError(event) {
                     'border-purple-200': toast.type === 'info',
                 }"
             >
-
-                <!-- ICON -->
                 <div
                     v-if="toast.type === 'success'"
                     class="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold mr-3 flex-shrink-0"
@@ -2297,9 +2811,7 @@ function handleImageError(event) {
                     v-else-if="toast.type === 'warning'"
                     class="w-8 h-8 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center font-bold mr-3 flex-shrink-0"
                 >
-                    <i
-                        class="fa-solid fa-triangle-exclamation"
-                    ></i>
+                    <i class="fa-solid fa-triangle-exclamation"></i>
                 </div>
 
                 <div
@@ -2316,17 +2828,12 @@ function handleImageError(event) {
                     <i class="fa-solid fa-info"></i>
                 </div>
 
-                <!-- MESSAGE -->
                 <div class="flex-1 pr-2">
-                    <h5
-                        class="font-bold text-xs text-slate-800"
-                    >
+                    <h5 class="font-bold text-xs text-slate-800">
                         {{ toast.title }}
                     </h5>
 
-                    <p
-                        class="text-[11px] text-slate-500 mt-0.5"
-                    >
+                    <p class="text-[11px] text-slate-500 mt-0.5">
                         {{ toast.message }}
                     </p>
                 </div>
@@ -2339,16 +2846,10 @@ function handleImageError(event) {
                 </button>
             </div>
         </div>
-
     </div>
 </template>
 
 <style scoped>
-/*
-|--------------------------------------------------------------------------
-| Custom Scrollbar
-|--------------------------------------------------------------------------
-*/
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -2367,11 +2868,6 @@ function handleImageError(event) {
     background: #7c3aed;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Font
-|--------------------------------------------------------------------------
-*/
 :global(body) {
     font-family: 'Inter', sans-serif;
 }

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Inventory extends Model
 {
@@ -22,4 +23,15 @@ class Inventory extends Model
         'reorder_level' => 'integer',
         'unit_cost' => 'decimal:2',
     ];
+
+    /**
+     * Registration history belonging to this inventory item.
+     *
+     * Important:
+     * Updating inventory.quantity does NOT update history.
+     */
+    public function registrationHistories(): HasMany
+    {
+        return $this->hasMany(InventoryRegistrationHistory::class);
+    }
 }
