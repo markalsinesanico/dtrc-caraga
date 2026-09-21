@@ -24,6 +24,11 @@ class Inventory extends Model
         'unit_cost' => 'decimal:2',
     ];
 
+        public function requests(): HasMany
+    {
+         return $this->hasMany(InventoryRequest::class);
+    }   
+
     /**
      * Registration history belonging to this inventory item.
      *

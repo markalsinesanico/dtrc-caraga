@@ -1,3 +1,4 @@
+
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
@@ -36,6 +37,18 @@ const units = [
     'set',
 ]
 
+const departments = [
+    'HR',
+    'Accounting',
+    'Planning',
+    'Administrative',
+    'Finance',
+    'Engineering',
+    'IT',
+    'Procurement',
+    'Other',
+]
+
 /*
 |--------------------------------------------------------------------------
 | Inventory
@@ -69,6 +82,7 @@ function getLocalDateString(date = new Date()) {
 }
 
 const selectedRegistrationDate = ref(getLocalDateString())
+const selectedRequestDate = ref(getLocalDateString())
 const registeredItems = ref([])
 const registrationLoading = ref(false)
 const registrationError = ref('')
@@ -85,6 +99,18 @@ const viewMode = ref('table')
 const showAddModal = ref(false)
 const showUpdateModal = ref(false)
 const showEditModal = ref(false)
+
+const showRequestModal = ref(false)
+const isSubmittingRequest = ref(false)
+
+const requestForm = ref({
+    requestorName: '',
+    departmentOffice: '',
+    itemId: null,
+    itemName: '',
+    quantity: 1,
+    requestDate: getLocalDateString(),
+})
 
 const activeEditingId = ref(null)
 const currentModalImageData = ref('')
@@ -343,7 +369,7 @@ function apiErrorMessage(error, fallback) {
 */
 async function loadInventory() {
     try {
-        const { data } = await axios.get('/inventory')
+        const { data } = await axios.get('/api/inventory')
 
         inventory.value = (data || []).map(fromApi)
 
@@ -354,6 +380,10 @@ async function loadInventory() {
         */
         await loadRegisteredItemsByDate(
             selectedRegistrationDate.value,
+        )
+
+        await loadRequestItemsByDate(
+            selectedRequestDate.value,
         )
     } catch (error) {
         showToast(
@@ -392,7 +422,7 @@ async function loadRegisteredItemsByDate(
 
     try {
         const { data } = await axios.get(
-            '/inventory/registration-history',
+            '/api/inventory/registration-history',
             {
                 params: {
                     date,
@@ -451,8 +481,397 @@ const registrationCount = computed(
     () => registeredItems.value.length,
 )
 
+const formattedRequestDate = computed(() => {
+    if (!selectedRequestDate.value) return ''
+
+    const [year, month, day] = selectedRequestDate.value.split('-')
+
+    const date = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+    )
+
+    return date.toLocaleDateString('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+    })
+})
+
+/*
+|--------------------------------------------------------------------------
+| Inventory Request History
+|--------------------------------------------------------------------------
+|
+| Request history uses the same selected date as registration history.
+| This keeps the dashboard organized around one daily activity date.
+|
+|--------------------------------------------------------------------------
+*/
+const requestItems = ref([])
+const requestLoading = ref(false)
+const requestError = ref('')
+
+function fromRequestApi(item) {
+    return {
+        id: item.id,
+        requestorName: item.requestor_name,
+        departmentOffice: item.department_office,
+        inventoryId: item.inventory_id,
+        propertyNo: item.property_no || '-',
+        itemName: item.item_name,
+        unit: item.unit,
+        requestedQuantity: Number(item.requested_quantity) || 0,
+        requestDate: item.request_date || null,
+        requestedAt: item.requested_at || item.created_at || null,
+    }
+}
+
+async function loadRequestItemsByDate(
+    date = selectedRequestDate.value,
+) {
+    if (!date) {
+        requestItems.value = []
+        return
+    }
+
+    requestLoading.value = true
+    requestError.value = ''
+
+    try {
+        const { data } = await axios.get(
+            '/api/inventory/request-history',
+            {
+                params: {
+                    date,
+                },
+            },
+        )
+
+        requestItems.value = (data || [])
+            .map(fromRequestApi)
+            .sort((a, b) => {
+                const first =
+                    new Date(a.requestedAt || 0).getTime()
+
+                const second =
+                    new Date(b.requestedAt || 0).getTime()
+
+                return second - first
+            })
+    } catch (error) {
+        console.error(
+            'Failed to load inventory request history:',
+            error,
+        )
+
+        requestItems.value = []
+
+        requestError.value = apiErrorMessage(
+            error,
+            'Unable to load inventory request history.',
+        )
+    } finally {
+        requestLoading.value = false
+    }
+}
+
+const requestCount = computed(
+    () => requestItems.value.length,
+)
+
+function formatRequestTime(value) {
+    if (!value) return '-'
+
+    const date = new Date(value)
+
+    if (Number.isNaN(date.getTime())) return '-'
+
+    return date.toLocaleTimeString('en-PH', {
+        hour: 'numeric',
+        minute: '2-digit',
+    })
+}
+
+function escapePrintHtml(value) {
+    return String(value ?? '-')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+}
+
+async function printRequestHistory() {
+    requestError.value = ''
+
+    try {
+        // Printing is intentionally independent of the selected date.
+        // Fetch every request record from the server so the PDF/document
+        // contains the complete historical request list.
+        const { data } = await axios.get(
+            '/api/inventory/request-history',
+        )
+
+        const allRequests = (data || [])
+            .map(fromRequestApi)
+            .sort((a, b) => {
+                const first =
+                    new Date(a.requestedAt || 0).getTime()
+
+                const second =
+                    new Date(b.requestedAt || 0).getTime()
+
+                return second - first
+            })
+
+        if (allRequests.length === 0) {
+            window.alert('There are no inventory request records to print.')
+            return
+        }
+
+        const rows = allRequests
+            .map((request, index) => {
+                return `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td>${escapePrintHtml(request.id)}</td>
+                        <td>${escapePrintHtml(request.inventoryId ?? '-')}</td>
+                        <td>${escapePrintHtml(formatRequestTime(request.requestedAt))}</td>
+                        <td>${escapePrintHtml(request.requestorName)}</td>
+                        <td>${escapePrintHtml(request.departmentOffice)}</td>
+                        <td>${escapePrintHtml(request.propertyNo)}</td>
+                        <td>${escapePrintHtml(request.itemName)}</td>
+                        <td>${escapePrintHtml(request.unit)}</td>
+                        <td>${escapePrintHtml(request.requestedQuantity)}</td>
+                        <td>${escapePrintHtml(request.requestDate || '-')}</td>
+                    </tr>
+                `
+            })
+            .join('')
+
+        const generatedAt = new Date().toLocaleString('en-PH', {
+            dateStyle: 'long',
+            timeStyle: 'short',
+        })
+
+        const printWindow = window.open(
+            '',
+            '_blank',
+            'width=1400,height=900',
+        )
+
+        if (!printWindow) {
+            window.alert(
+                'Please allow pop-ups for this site to print the request history.',
+            )
+            return
+        }
+
+        printWindow.document.open()
+        printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Complete Inventory Request History</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 10mm;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            color: #1e293b;
+            background: #fff;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 9px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 24px;
+            margin-bottom: 14px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e11d48;
+        }
+
+        .title {
+            margin: 0;
+            font-size: 20px;
+            color: #0f172a;
+        }
+
+        .subtitle {
+            margin: 4px 0 0;
+            color: #64748b;
+            font-size: 11px;
+        }
+
+        .meta {
+            text-align: right;
+            color: #475569;
+            font-size: 9px;
+            line-height: 1.6;
+        }
+
+        .summary {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .summary-card {
+            min-width: 150px;
+            padding: 8px 11px;
+            border: 1px solid #fecdd3;
+            border-radius: 7px;
+            background: #fff1f2;
+        }
+
+        .summary-label {
+            display: block;
+            margin-bottom: 2px;
+            color: #be123c;
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+        }
+
+        .summary-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        th, td {
+            border: 1px solid #cbd5e1;
+            padding: 5px 4px;
+            vertical-align: top;
+            word-break: break-word;
+        }
+
+        th {
+            background: #f1f5f9;
+            color: #334155;
+            font-size: 7.5px;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+        }
+
+        td {
+            font-size: 8px;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #f8fafc;
+        }
+
+        .footer {
+            margin-top: 14px;
+            padding-top: 7px;
+            border-top: 1px solid #cbd5e1;
+            color: #64748b;
+            font-size: 8px;
+        }
+
+        @media print {
+            body {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1 class="title">Complete Inventory Request History</h1>
+            <p class="subtitle">All inventory request records from the system</p>
+        </div>
+        <div class="meta">
+            <div><strong>Total Records:</strong> ${allRequests.length}</div>
+            <div><strong>Generated:</strong> ${escapePrintHtml(generatedAt)}</div>
+        </div>
+    </div>
+
+    <div class="summary">
+        <div class="summary-card">
+            <span class="summary-label">Total Requests</span>
+            <span class="summary-value">${allRequests.length}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Report Scope</span>
+            <span class="summary-value">All Records</span>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 3%;">#</th>
+                <th style="width: 5%;">Request ID</th>
+                <th style="width: 6%;">Inventory ID</th>
+                <th style="width: 7%;">Time</th>
+                <th style="width: 12%;">Requestor / Name</th>
+                <th style="width: 13%;">Department / Office</th>
+                <th style="width: 10%;">Property Number</th>
+                <th style="width: 17%;">Item Name</th>
+                <th style="width: 6%;">Unit</th>
+                <th style="width: 7%;">Requested Qty.</th>
+                <th style="width: 14%;">Request Date</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+    </table>
+
+    <div class="footer">
+        Inventory Request History • This document contains every inventory request record currently stored in the system.
+    </div>
+</body>
+</html>`)
+        printWindow.document.close()
+        printWindow.focus()
+
+        setTimeout(() => {
+            printWindow.print()
+        }, 300)
+    } catch (error) {
+        console.error(
+            'Failed to load complete inventory request history for printing:',
+            error,
+        )
+
+        window.alert(
+            apiErrorMessage(
+                error,
+                'Unable to load all inventory request records for printing.',
+            ),
+        )
+    }
+}
+
 watch(selectedRegistrationDate, (newDate) => {
     loadRegisteredItemsByDate(newDate)
+})
+
+watch(selectedRequestDate, (newDate) => {
+    loadRequestItemsByDate(newDate)
 })
 
 onMounted(() => {
@@ -571,7 +990,7 @@ async function handleAddItem() {
 
     try {
         const { data } = await axios.post(
-            '/inventory',
+            '/api/inventory',
             payload,
         )
 
@@ -623,7 +1042,7 @@ async function handleAddItem() {
 */
 async function persistItem(item) {
     const { data } = await axios.put(
-        `/inventory/${item.id}`,
+        `/api/inventory/${item.id}`,
         toApi(item),
     )
 
@@ -693,6 +1112,146 @@ async function quickAdjustQty(id, change) {
             `Updated current stock for "${item.name}" to ${newQty}.`,
             'info',
         )
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Inventory Request
+|--------------------------------------------------------------------------
+*/
+function openRequestModal(id) {
+    const item = inventory.value.find((row) => row.id === id)
+
+    if (!item) return
+
+    requestForm.value = {
+        requestorName: '',
+        departmentOffice: '',
+        itemId: item.id,
+        itemName: item.name,
+        quantity: 1,
+        requestDate: getLocalDateString(),
+    }
+
+    showRequestModal.value = true
+}
+
+function closeRequestModal() {
+    showRequestModal.value = false
+}
+
+async function submitInventoryRequest() {
+    if (isSubmittingRequest.value) return
+
+    const quantity = Number(requestForm.value.quantity)
+
+    if (!requestForm.value.requestorName.trim()) {
+        showToast(
+            'Requestor Required',
+            'Please enter the requestor/name.',
+            'danger',
+        )
+        return
+    }
+
+    if (!requestForm.value.departmentOffice) {
+        showToast(
+            'Department Required',
+            'Please select the department/office.',
+            'danger',
+        )
+        return
+    }
+
+    if (!requestForm.value.requestDate) {
+        showToast(
+            'Date Required',
+            'Please select the request date.',
+            'danger',
+        )
+        return
+    }
+
+    if (!Number.isInteger(quantity) || quantity < 1) {
+        showToast(
+            'Invalid Quantity',
+            'Requested quantity must be a whole number greater than zero.',
+            'danger',
+        )
+        return
+    }
+
+    const item = inventory.value.find(
+        (row) => row.id === requestForm.value.itemId,
+    )
+
+    if (!item) {
+        showToast(
+            'Item Not Found',
+            'The selected inventory item is no longer available.',
+            'danger',
+        )
+        return
+    }
+
+    if (quantity > item.quantity) {
+        showToast(
+            'Insufficient Stock',
+            `Only ${item.quantity} ${item.unit}${item.quantity === 1 ? '' : 's'} of "${item.name}" are available.`,
+            'danger',
+        )
+        return
+    }
+
+    isSubmittingRequest.value = true
+
+    try {
+        const { data } = await axios.post(
+            '/api/inventory/requests',
+            {
+                requestor_name:
+                    requestForm.value.requestorName.trim(),
+                department_office:
+                    requestForm.value.departmentOffice,
+                inventory_id: item.id,
+                quantity,
+                request_date:
+                    requestForm.value.requestDate,
+            },
+        )
+
+        const updatedInventory = fromApi(data.data.inventory)
+        const index = inventory.value.findIndex(
+            (row) => row.id === updatedInventory.id,
+        )
+
+        if (index !== -1) {
+            inventory.value[index] = updatedInventory
+        }
+
+        await loadRequestItemsByDate(
+            selectedRequestDate.value,
+        )
+
+        closeRequestModal()
+
+        showToast(
+            'Request Recorded',
+            `Recorded ${quantity} ${item.unit}${quantity === 1 ? '' : 's'} of "${item.name}" for ${requestForm.value.departmentOffice}. Available stock is now ${updatedInventory.quantity}.`,
+            'success',
+        )
+    } catch (error) {
+        showToast(
+            'Request Failed',
+            apiErrorMessage(
+                error,
+                'Could not record the inventory request.',
+            ),
+            'danger',
+        )
+    } finally {
+        isSubmittingRequest.value = false
     }
 }
 
@@ -927,7 +1486,7 @@ async function deleteCurrentItem() {
     isSaving.value = true
 
     try {
-        await axios.delete(`/inventory/${id}`)
+        await axios.delete(`/api/inventory/${id}`)
 
         inventory.value = inventory.value.filter(
             (row) => row.id !== id,
@@ -1220,208 +1779,6 @@ function handleImageError(event) {
             </div>
 
             <!-- =====================================================
-                 INVENTORY REGISTRATION HISTORY
-            ====================================================== -->
-            <section
-                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
-            >
-                <div
-                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
-                >
-                    <div
-                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
-                    >
-                        <div>
-                            <div class="flex items-center space-x-2">
-                                <div
-                                    class="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center"
-                                >
-                                    <i class="fa-solid fa-calendar-days"></i>
-                                </div>
-
-                                <div>
-                                    <h2 class="text-lg font-bold text-slate-800">
-                                        Inventory Registration History
-                                    </h2>
-
-                                    <p class="text-xs text-slate-500 mt-0.5">
-                                        View all inventory items registered on a specific date.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
-                            <label
-                                for="registration-date"
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Select Date
-                            </label>
-
-                            <div class="relative">
-                                <i
-                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-purple-500 text-sm pointer-events-none"
-                                ></i>
-
-                                <input
-                                    id="registration-date"
-                                    v-model="selectedRegistrationDate"
-                                    type="date"
-                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm"
-                                />
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div
-                    class="px-5 sm:px-6 py-4 border-b border-slate-100 bg-purple-50/40"
-                >
-                    <div
-                        class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
-                    >
-                        <div>
-                            <p class="text-xs font-bold uppercase tracking-wider text-purple-600">
-                                Registered Items
-                            </p>
-
-                            <h3 class="text-lg sm:text-xl font-black text-slate-800 mt-0.5">
-                                Items Registered on {{ formattedRegistrationDate }}
-                            </h3>
-                        </div>
-
-                        <div
-                            class="inline-flex items-center self-start sm:self-auto gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
-                        >
-                            <i class="fa-solid fa-box-open text-purple-600"></i>
-
-                            <span class="text-sm font-bold">
-                                {{ registrationCount }}
-                                {{ registrationCount === 1 ? 'Item' : 'Items' }}
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
-                <div
-                    v-if="registrationLoading"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 text-purple-600 mb-3"
-                    >
-                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-slate-600">
-                        Loading registered items...
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="registrationError"
-                    class="px-6 py-10 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
-                    >
-                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-rose-700">
-                        {{ registrationError }}
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="registeredItems.length === 0"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
-                    >
-                        <i class="fa-solid fa-calendar-xmark text-2xl"></i>
-                    </div>
-
-                    <h3 class="text-base font-bold text-slate-700">
-                        No Items Registered
-                    </h3>
-
-                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
-                        No inventory items were registered on {{ formattedRegistrationDate }}.
-                    </p>
-                </div>
-
-                <div v-else class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="bg-slate-50 border-b border-slate-200">
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Qty
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Property Number
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Item Name
-                                </th>
-                            </tr>
-                        </thead>
-
-                        <tbody class="divide-y divide-slate-100">
-                            <tr
-                                v-for="item in registeredItems"
-                                :key="item.id"
-                                class="hover:bg-purple-50/40 transition-colors"
-                            >
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span
-                                        class="inline-flex items-center justify-center min-w-[42px] px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 text-sm font-black border border-purple-200"
-                                    >
-                                        {{ item.registeredQty }}
-                                    </span>
-
-                                    <span class="ml-2 text-xs text-slate-400">
-                                        {{ item.unit }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span class="font-mono text-sm font-bold text-slate-700">
-                                        {{ item.propertyNo }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4">
-                                    <div class="flex items-center gap-3">
-                                        <img
-                                            :src="itemImage(item)"
-                                            :alt="item.name"
-                                            @error="handleImageError"
-                                            class="w-10 h-10 rounded-lg object-cover border border-slate-200 bg-slate-50"
-                                        />
-
-                                        <div>
-                                            <p class="text-sm font-bold text-slate-800">
-                                                {{ item.name }}
-                                            </p>
-
-                                            <p class="text-xs text-slate-400 mt-0.5">
-                                                {{ item.category }}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-
-            <!-- =====================================================
                  AVAILABLE INVENTORY
             ====================================================== -->
             <section
@@ -1679,8 +2036,8 @@ function handleImageError(event) {
                                     </button>
 
                                     <button
-                                        @click="quickAdjustQty(item.id, -1)"
-                                        title="Quick Deduct -1"
+                                        @click="openRequestModal(item.id)"
+                                        title="Request Item"
                                         class="p-1.5 text-slate-600 hover:text-rose-700 hover:bg-rose-100/70 rounded-lg transition-colors"
                                     >
                                         <i
@@ -1847,7 +2204,7 @@ function handleImageError(event) {
                 </div>
             </section>
 
-            <!-- =====================================================
+<!-- =====================================================
                  OUT OF STOCK
             ====================================================== -->
             <section
@@ -2021,6 +2378,466 @@ function handleImageError(event) {
                         Excellent! There are currently no critical zero-balance
                         items in the material office.
                     </p>
+                </div>
+            </section>
+
+<!-- =====================================================
+                 INVENTORY REGISTRATION HISTORY
+            ====================================================== -->
+            <section
+                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
+            >
+                <div
+                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
+                >
+                    <div
+                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
+                    >
+                        <div>
+                            <div class="flex items-center space-x-2">
+                                <div
+                                    class="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center"
+                                >
+                                    <i class="fa-solid fa-calendar-days"></i>
+                                </div>
+
+                                <div>
+                                    <h2 class="text-lg font-bold text-slate-800">
+                                        Inventory Registration History
+                                    </h2>
+
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        View all inventory items registered on a specific date.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                            <label
+                                for="registration-date"
+                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
+                            >
+                                Select Date
+                            </label>
+
+                            <div class="relative">
+                                <i
+                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-purple-500 text-sm pointer-events-none"
+                                ></i>
+
+                                <input
+                                    id="registration-date"
+                                    v-model="selectedRegistrationDate"
+                                    type="date"
+                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    class="px-5 sm:px-6 py-4 border-b border-slate-100 bg-purple-50/40"
+                >
+                    <div
+                        class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                    >
+                        <div>
+                            <p class="text-xs font-bold uppercase tracking-wider text-purple-600">
+                                Registered Items
+                            </p>
+
+                            <h3 class="text-lg sm:text-xl font-black text-slate-800 mt-0.5">
+                                Items Registered on {{ formattedRegistrationDate }}
+                            </h3>
+                        </div>
+
+                        <div
+                            class="inline-flex items-center self-start sm:self-auto gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
+                        >
+                            <i class="fa-solid fa-box-open text-purple-600"></i>
+
+                            <span class="text-sm font-bold">
+                                {{ registrationCount }}
+                                {{ registrationCount === 1 ? 'Item' : 'Items' }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    v-if="registrationLoading"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 text-purple-600 mb-3"
+                    >
+                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-slate-600">
+                        Loading registered items...
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="registrationError"
+                    class="px-6 py-10 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
+                    >
+                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-rose-700">
+                        {{ registrationError }}
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="registeredItems.length === 0"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
+                    >
+                        <i class="fa-solid fa-calendar-xmark text-2xl"></i>
+                    </div>
+
+                    <h3 class="text-base font-bold text-slate-700">
+                        No Items Registered
+                    </h3>
+
+                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
+                        No inventory items were registered on {{ formattedRegistrationDate }}.
+                    </p>
+                </div>
+
+                <div v-else class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200">
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Qty
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Property Number
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Item Name
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="item in registeredItems"
+                                :key="item.id"
+                                class="hover:bg-purple-50/40 transition-colors"
+                            >
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span
+                                        class="inline-flex items-center justify-center min-w-[42px] px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 text-sm font-black border border-purple-200"
+                                    >
+                                        {{ item.registeredQty }}
+                                    </span>
+
+                                    <span class="ml-2 text-xs text-slate-400">
+                                        {{ item.unit }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span class="font-mono text-sm font-bold text-slate-700">
+                                        {{ item.propertyNo }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4">
+                                    <div class="flex items-center gap-3">
+                                        <img
+                                            :src="itemImage(item)"
+                                            :alt="item.name"
+                                            @error="handleImageError"
+                                            class="w-10 h-10 rounded-lg object-cover border border-slate-200 bg-slate-50"
+                                        />
+
+                                        <div>
+                                            <p class="text-sm font-bold text-slate-800">
+                                                {{ item.name }}
+                                            </p>
+
+                                            <p class="text-xs text-slate-400 mt-0.5">
+                                                {{ item.category }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+<!-- =====================================================
+                 INVENTORY REQUEST HISTORY
+            ====================================================== -->
+            <section
+                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
+            >
+                <div
+                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
+                >
+                    <div
+                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
+                    >
+                        <div>
+                            <div class="flex items-center space-x-2">
+                                <div
+                                    class="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center"
+                                >
+                                    <i class="fa-solid fa-file-circle-minus"></i>
+                                </div>
+
+                                <div>
+                                    <h2 class="text-lg font-bold text-slate-800">
+                                        Inventory Request History
+                                    </h2>
+
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        View all inventory requests recorded on the selected date.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div
+                            class="inline-flex items-center self-start lg:self-auto gap-2 bg-white border border-rose-200 text-rose-800 px-3 py-2 rounded-xl shadow-sm"
+                        >
+                            <i class="fa-solid fa-clipboard-list text-rose-600"></i>
+
+                            <span class="text-sm font-bold">
+                                {{ requestCount }}
+                                {{ requestCount === 1 ? 'Request' : 'Requests' }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div
+                        class="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-rose-50/60 border border-rose-100 rounded-xl px-4 py-3"
+                    >
+                        <div class="flex items-center gap-2 min-w-0">
+                            <i class="fa-solid fa-calendar-day text-rose-600"></i>
+                            <span class="text-xs font-bold uppercase tracking-wider text-rose-600">
+                                Request Date
+                            </span>
+                            <span class="text-sm font-black text-slate-800 truncate">
+                                {{ formattedRequestDate }}
+                            </span>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                            <label
+                                for="request-date"
+                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
+                            >
+                                Select Date
+                            </label>
+
+                            <div class="relative">
+                                <i
+                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-rose-500 text-sm pointer-events-none"
+                                ></i>
+
+                                <input
+                                    id="request-date"
+                                    v-model="selectedRequestDate"
+                                    type="date"
+                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent shadow-sm"
+                                />
+                            </div>
+
+                            <button
+                                type="button"
+                                @click="printRequestHistory"
+                                :disabled="requestLoading || requestItems.length === 0"
+                                title="Print or save request history as PDF"
+                                aria-label="Print or save request history as PDF"
+                                class="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-rose-600 text-white shadow-sm transition hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600"
+                            >
+                                <i class="fa-solid fa-print text-base"></i>
+                            </button>
+
+                            <span
+                                v-if="requestCount > 3"
+                                class="hidden lg:inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500"
+                            >
+                                <i class="fa-solid fa-arrows-up-down text-rose-500"></i>
+                                Scroll to view all requests
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    v-if="requestLoading"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
+                    >
+                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-slate-600">
+                        Loading inventory requests...
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="requestError"
+                    class="px-6 py-10 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
+                    >
+                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
+                    </div>
+
+                    <p class="text-sm font-semibold text-rose-700">
+                        {{ requestError }}
+                    </p>
+                </div>
+
+                <div
+                    v-else-if="requestItems.length === 0"
+                    class="px-6 py-12 text-center"
+                >
+                    <div
+                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
+                    >
+                        <i class="fa-solid fa-clipboard-list text-2xl"></i>
+                    </div>
+
+                    <h3 class="text-base font-bold text-slate-700">
+                        No Inventory Requests
+                    </h3>
+
+                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
+                        No inventory requests were recorded on {{ formattedRequestDate }}.
+                    </p>
+                </div>
+
+                <div
+                    v-else
+                    class="max-h-[300px] min-h-[205px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
+                >
+                    <table class="w-full min-w-[900px] text-left border-collapse">
+                        <thead class="sticky top-0 z-10">
+                            <tr class="bg-slate-50 border-b border-slate-200 shadow-sm">
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Time
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Requestor / Name
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Department / Office
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Property Number
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Item Name
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 text-right">
+                                    Requested
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="request in requestItems"
+                                :key="request.id"
+                                class="hover:bg-rose-50/40 transition-colors"
+                            >
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center gap-2">
+                                        <span
+                                            class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-rose-100 text-rose-700 border border-rose-200"
+                                        >
+                                            <i class="fa-solid fa-clock text-xs"></i>
+                                        </span>
+                                        <span class="text-xs font-bold text-slate-600">
+                                            {{ formatRequestTime(request.requestedAt) }}
+                                        </span>
+                                    </div>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4">
+                                    <p class="text-sm font-bold text-slate-800">
+                                        {{ request.requestorName }}
+                                    </p>
+                                    <p class="text-[11px] text-slate-400 mt-0.5">
+                                        {{ request.requestDate }}
+                                    </p>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span
+                                        class="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold"
+                                    >
+                                        {{ request.departmentOffice }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
+                                    <span class="font-mono text-xs font-bold text-slate-700">
+                                        {{ request.propertyNo }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4">
+                                    <div class="flex items-center gap-3">
+                                        <div
+                                            class="w-9 h-9 rounded-lg bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center flex-shrink-0"
+                                        >
+                                            <i class="fa-solid fa-box-open text-sm"></i>
+                                        </div>
+                                        <div>
+                                            <p class="text-sm font-bold text-slate-800">
+                                                {{ request.itemName }}
+                                            </p>
+                                            <p class="text-xs text-slate-400 mt-0.5">
+                                                {{ request.unit }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4 text-right whitespace-nowrap">
+                                    <span
+                                        class="inline-flex items-center justify-center min-w-[48px] px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 text-sm font-black border border-rose-200"
+                                    >
+                                        {{ request.requestedQuantity }}
+                                    </span>
+                                    <span class="ml-1 text-xs text-slate-400">
+                                        {{ request.unit }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
         </main>
@@ -2339,6 +3156,202 @@ function handleImageError(event) {
                                 isSaving
                                     ? 'Saving...'
                                     : 'Save & Register Item'
+                            }}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- =========================================================
+             INVENTORY REQUEST MODAL
+        ========================================================== -->
+        <div
+            v-if="showRequestModal"
+            class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center"
+            @click.self="closeRequestModal"
+        >
+            <div
+                class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-lg w-full mx-4 overflow-hidden"
+            >
+                <div
+                    class="bg-gradient-to-r from-rose-700 to-rose-600 px-6 py-4 text-white flex justify-between items-center"
+                >
+                    <div class="flex items-center space-x-2">
+                        <i class="fa-solid fa-file-circle-minus text-rose-200 text-lg"></i>
+                        <div>
+                            <h3 class="font-bold text-base text-white">
+                                Inventory Request
+                            </h3>
+                            <p class="text-[11px] text-rose-100 mt-0.5">
+                                Record an office request and deduct it from available stock.
+                            </p>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        @click="closeRequestModal"
+                        :disabled="isSubmittingRequest"
+                        class="text-rose-100 hover:text-white bg-rose-800/40 hover:bg-rose-800/70 p-1.5 rounded-xl transition-colors disabled:opacity-50"
+                    >
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+
+                <form
+                    @submit.prevent="submitInventoryRequest"
+                    class="p-6 space-y-4"
+                >
+                    <div
+                        class="bg-rose-50 p-4 rounded-2xl border border-rose-100"
+                    >
+                        <div class="flex items-center justify-between gap-3">
+                            <div>
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-rose-600">
+                                    Requested Item
+                                </p>
+                                <p class="text-sm font-black text-slate-800 mt-0.5">
+                                    {{ requestForm.itemName }}
+                                </p>
+                            </div>
+
+                            <div class="text-right">
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                    Available
+                                </p>
+                                <p class="text-sm font-black text-emerald-700">
+                                    {{
+                                        inventory.find(
+                                            (row) => row.id === requestForm.itemId,
+                                        )?.quantity ?? 0
+                                    }}
+                                    {{
+                                        inventory.find(
+                                            (row) => row.id === requestForm.itemId,
+                                        )?.unit ?? ''
+                                    }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label
+                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                        >
+                            Requestor / Name *
+                        </label>
+                        <input
+                            v-model="requestForm.requestorName"
+                            type="text"
+                            required
+                            autocomplete="name"
+                            placeholder="e.g. Juan Dela Cruz"
+                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        />
+                    </div>
+
+                    <div>
+                        <label
+                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                        >
+                            Department / Office *
+                        </label>
+                        <select
+                            v-model="requestForm.departmentOffice"
+                            required
+                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        >
+                            <option value="" disabled>
+                                Select department / office
+                            </option>
+                            <option
+                                v-for="department in departments"
+                                :key="department"
+                                :value="department"
+                            >
+                                {{ department }}
+                            </option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label
+                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                        >
+                            Item Name *
+                        </label>
+                        <input
+                            v-model="requestForm.itemName"
+                            type="text"
+                            readonly
+                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700"
+                        />
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label
+                                class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                            >
+                                Quantity / Number Requested *
+                            </label>
+                            <input
+                                v-model.number="requestForm.quantity"
+                                type="number"
+                                min="1"
+                                :max="inventory.find((row) => row.id === requestForm.itemId)?.quantity ?? 1"
+                                required
+                                class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label
+                                class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                            >
+                                Request Date *
+                            </label>
+                            <input
+                                v-model="requestForm.requestDate"
+                                type="date"
+                                required
+                                class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                            />
+                        </div>
+                    </div>
+
+                    <div
+                        class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3.5 py-3 text-xs font-semibold"
+                    >
+                        <i class="fa-solid fa-circle-info mr-1"></i>
+                        Submitting this request will permanently record the request
+                        and deduct the requested quantity from available inventory.
+                    </div>
+
+                    <div
+                        class="pt-4 flex justify-end space-x-3 border-t border-slate-100"
+                    >
+                        <button
+                            type="button"
+                            @click="closeRequestModal"
+                            :disabled="isSubmittingRequest"
+                            class="px-5 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors disabled:opacity-50"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="submit"
+                            :disabled="isSubmittingRequest"
+                            class="px-6 py-2.5 bg-gradient-to-r from-rose-700 to-rose-600 hover:from-rose-600 hover:to-rose-500 text-white rounded-xl text-xs font-bold shadow-md transition-all disabled:opacity-60"
+                        >
+                            <i class="fa-solid fa-paper-plane mr-1.5"></i>
+                            {{
+                                isSubmittingRequest
+                                    ? 'Recording...'
+                                    : 'Submit Request'
                             }}
                         </button>
                     </div>
@@ -2871,4 +3884,4 @@ function handleImageError(event) {
 :global(body) {
     font-family: 'Inter', sans-serif;
 }
-</style>
+</style> 
