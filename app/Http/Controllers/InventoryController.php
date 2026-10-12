@@ -17,49 +17,51 @@ class InventoryController extends Controller
         );
     }
 
-    public function registrationHistory(Request $request)
-    {
-        $validated = $request->validate([
-            'date' => [
-                'required',
-                'date',
-                'date_format:Y-m-d',
-            ],
-        ]);
 
-        $history = InventoryRegistrationHistory::query()
-            ->whereDate(
-                'registered_date',
-                $validated['date']
-            )
-            ->orderBy('registered_at')
-            ->orderBy('id')
-            ->get();
+// Replace InventoryController::registrationHistory() with this method.
+// It supports both: ?date=YYYY-MM-DD (single day) and no date (all dates).
+public function registrationHistory(Request $request)
+{
+    $validated = $request->validate([
+        'date' => ['nullable', 'date', 'date_format:Y-m-d'],
+    ]);
 
-        return response()->json(
-            $history->map(function (
-                InventoryRegistrationHistory $item
-            ) {
-                return [
-                    'id' => $item->id,
-                    'property_no' => $item->property_no,
-                    'name' => $item->name,
-                    'category' => $item->category,
-                    'unit' => $item->unit,
-                    'registered_qty' => $item->registered_qty,
-                    'reorder_level' => $item->reorder_level,
-                    'unit_cost' => $item->unit_cost,
-                    'image' => $item->image,
-                    'registered_date' =>
-                        $item->registered_date?->format('Y-m-d'),
-                    'registered_at' =>
-                        $item->registered_at?->toISOString(),
-                    'created_at' =>
-                        $item->created_at?->toISOString(),
-                ];
-            })
-        );
+    $query = InventoryRegistrationHistory::query();
+
+    if (!empty($validated['date'])) {
+        $query->whereDate('registered_date', $validated['date']);
     }
+
+    $history = $query
+        ->orderByDesc('registered_at')
+        ->orderByDesc('id')
+        ->get();
+
+    return response()->json(
+        $history->map(function (InventoryRegistrationHistory $item) {
+            return [
+                'id' => $item->id,
+                'inventory_id' => $item->inventory_id,
+                'property_no' => $item->property_no,
+                'name' => $item->name,
+                'category' => $item->category,
+                'unit' => $item->unit,
+                'registered_qty' => $item->registered_qty,
+                'reorder_level' => $item->reorder_level,
+                'unit_cost' => $item->unit_cost,
+                'image' => $item->image,
+                'registered_date' => $item->registered_date?->format('Y-m-d'),
+                'registered_at' => $item->registered_at?->toISOString(),
+                'created_at' => $item->created_at?->toISOString(),
+            ];
+        })
+    );
+}
+
+// Also verify InventoryController::store() creates an InventoryRegistrationHistory
+// row in the same DB transaction as Inventory::create(). A new inventory item
+// should not be considered successfully registered unless both inserts succeed.
+
 
     public function requestHistory(Request $request)
     {

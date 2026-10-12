@@ -1,3 +1,5 @@
+Dashboard.vue
+
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
@@ -84,6 +86,7 @@ function getLocalDateString(date = new Date()) {
 const selectedRegistrationDate = ref(getLocalDateString())
 const selectedRequestDate = ref(getLocalDateString())
 const registeredItems = ref([])
+const registrationSearch = ref('')
 const registrationLoading = ref(false)
 const registrationError = ref('')
 
@@ -412,7 +415,9 @@ async function loadInventory() {
 async function loadRegisteredItemsByDate(
     date = selectedRegistrationDate.value,
 ) {
-    if (!date) {
+    // Pass null to load history across every registration date.
+    // A date string keeps the existing single-day view.
+    if (date !== null && !date) {
         registeredItems.value = []
         return
     }
@@ -424,9 +429,7 @@ async function loadRegisteredItemsByDate(
         const { data } = await axios.get(
             '/api/inventory/registration-history',
             {
-                params: {
-                    date,
-                },
+                params: date ? { date } : {},
             },
         )
 
@@ -477,8 +480,19 @@ const formattedRegistrationDate = computed(() => {
     })
 })
 
+const filteredRegisteredItems = computed(() => {
+    const term = registrationSearch.value.trim().toLowerCase()
+
+    if (!term) return registeredItems.value
+
+    return registeredItems.value.filter((item) =>
+        [item.name, item.propertyNo, item.category, item.unit]
+            .some((value) => String(value ?? '').toLowerCase().includes(term)),
+    )
+})
+
 const registrationCount = computed(
-    () => registeredItems.value.length,
+    () => filteredRegisteredItems.value.length,
 )
 
 const formattedRequestDate = computed(() => {
@@ -866,8 +880,165 @@ async function printRequestHistory() {
     }
 }
 
+
+function csvCell(value) {
+    const text = String(value ?? '')
+    return `"${text.replace(/"/g, '""')}"`
+}
+
+async function fetchAllRegistrationHistory() {
+    const { data } = await axios.get(
+        '/api/inventory/registration-history',
+    )
+
+    return (data || [])
+        .map(fromHistoryApi)
+        .sort((a, b) => {
+            const first = new Date(a.registeredAt || 0).getTime()
+            const second = new Date(b.registeredAt || 0).getTime()
+            return first - second
+        })
+}
+
+
+async function exportRegistrationHistoryToExcel() {
+    try {
+        const allRegisteredItems = await fetchAllRegistrationHistory()
+
+        if (!allRegisteredItems.length) {
+            window.alert('There are no inventory registration records to export.')
+            return
+        }
+
+        const headers = [
+            'Registration ID',
+            'Registration Date',
+            'Registered At',
+            'Property Number',
+            'Item Name',
+            'Category',
+            'Unit',
+            'Registered Quantity',
+            'Reorder Level',
+            'Unit Cost (PHP)',
+        ]
+
+        const rows = allRegisteredItems.map((item) => [
+            item.id,
+            item.registeredDate || '',
+            item.registeredAt || '',
+            item.propertyNo,
+            item.name,
+            item.category,
+            item.unit,
+            item.registeredQty,
+            item.reorderLevel,
+            Number(item.unitCost || 0).toFixed(2),
+        ])
+
+        const csv = '\uFEFF' + [headers, ...rows]
+            .map((row) => row.map(csvCell).join(','))
+            .join('\r\n')
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = 'inventory-registration-history-all-dates.csv'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        URL.revokeObjectURL(url)
+    } catch (error) {
+        console.error('Failed to export all registration history records:', error)
+        window.alert(apiErrorMessage(error, 'Unable to export all inventory registration records.'))
+    }
+}
+
+async function printRegistrationHistory() {
+    let allRegisteredItems
+
+    try {
+        allRegisteredItems = await fetchAllRegistrationHistory()
+    } catch (error) {
+        console.error('Failed to load all registration history records for printing:', error)
+        window.alert(apiErrorMessage(error, 'Unable to load all inventory registration records for printing.'))
+        return
+    }
+
+    if (!allRegisteredItems.length) {
+        window.alert('There are no inventory registration records to print.')
+        return
+    }
+
+    const rows = allRegisteredItems.map((item, index) => `
+        <tr>
+            <td>${index + 1}</td>
+            <td>${escapePrintHtml(item.id)}</td>
+            <td>${escapePrintHtml(item.registeredDate || '-')}</td>
+            <td>${escapePrintHtml(item.registeredAt || '-')}</td>
+            <td>${escapePrintHtml(item.propertyNo)}</td>
+            <td>${escapePrintHtml(item.name)}</td>
+            <td>${escapePrintHtml(item.category)}</td>
+            <td>${escapePrintHtml(item.unit)}</td>
+            <td>${escapePrintHtml(item.registeredQty)}</td>
+            <td>${escapePrintHtml(Number(item.unitCost || 0).toFixed(2))}</td>
+        </tr>
+    `).join('')
+
+    const printWindow = window.open('', '_blank', 'width=1400,height=900')
+    if (!printWindow) {
+        window.alert('Please allow pop-ups for this site to print registration history.')
+        return
+    }
+
+    printWindow.document.open()
+    printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Inventory Registration History — All Dates</title>
+<style>
+@page { size: A4 landscape; margin: 10mm; }
+body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; font-size: 10px; }
+h1 { font-size: 20px; margin-bottom: 4px; }
+p { color: #64748b; margin-top: 0; }
+table { width: 100%; border-collapse: collapse; table-layout: auto; }
+th, td { border: 1px solid #cbd5e1; padding: 6px; text-align: left; overflow-wrap: anywhere; }
+th { background: #f1f5f9; text-transform: uppercase; font-size: 8px; }
+tr:nth-child(even) { background: #f8fafc; }
+</style>
+</head>
+<body>
+<h1>Inventory Registration History — All Dates</h1>
+<p>Total records across all registration dates: ${allRegisteredItems.length}</p>
+<table>
+<thead><tr><th>#</th><th>Registration ID</th><th>Registration Date</th><th>Registered At</th><th>Property Number</th><th>Item Name</th><th>Category</th><th>Unit</th><th>Registered Qty</th><th>Unit Cost (PHP)</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</body>
+</html>`)
+    printWindow.document.close()
+    printWindow.focus()
+    setTimeout(() => printWindow.print(), 300)
+}
+
 watch(selectedRegistrationDate, (newDate) => {
-    loadRegisteredItemsByDate(newDate)
+    // While searching, keep all dates loaded; otherwise show the selected day.
+    if (registrationSearch.value.trim()) {
+        loadRegisteredItemsByDate(null)
+    } else {
+        loadRegisteredItemsByDate(newDate)
+    }
+})
+
+watch(registrationSearch, (value) => {
+    if (value.trim()) {
+        // Searching is global across all registration dates, not just the
+        // date currently selected in the calendar.
+        loadRegisteredItemsByDate(null)
+    } else {
+        loadRegisteredItemsByDate(selectedRegistrationDate.value)
+    }
 })
 
 watch(selectedRequestDate, (newDate) => {
@@ -876,6 +1047,7 @@ watch(selectedRequestDate, (newDate) => {
 
 onMounted(() => {
     loadInventory()
+    loadRegisteredItemsByDate(selectedRegistrationDate.value)
 })
 
 function isLowStock(item) {
@@ -1004,9 +1176,11 @@ async function handleAddItem() {
         | historical snapshot at registration time.
         |--------------------------------------------------------------------------
         */
-        await loadRegisteredItemsByDate(
-            selectedRegistrationDate.value,
-        )
+        // Show the new registration immediately, even if the date picker
+        // was left on an older date. The history API must create a history
+        // row in the same transaction as the inventory row.
+        selectedRegistrationDate.value = getLocalDateString()
+        await loadRegisteredItemsByDate(null)
 
         closeAddItemModal()
 
@@ -1883,7 +2057,7 @@ function handleImageError(event) {
                 <!-- TABLE VIEW -->
                 <div
                     v-if="viewMode === 'table'"
-                    class="overflow-x-auto"
+                    class="max-h-[310px] overflow-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
                 >
                     <table class="w-full text-left border-collapse">
                         <thead>
@@ -2073,7 +2247,7 @@ function handleImageError(event) {
                         viewMode === 'grid' &&
                         availableItems.length
                     "
-                    class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"
+                    class="max-h-[420px] overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
                 >
                     <div
                         v-for="item in availableItems"
@@ -2247,7 +2421,7 @@ function handleImageError(event) {
 
                 <div
                     v-if="outOfStockItems.length"
-                    class="overflow-x-auto"
+                    class="max-h-[310px] overflow-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
                 >
                     <table class="w-full text-left border-collapse">
                         <thead>
@@ -2437,6 +2611,22 @@ function handleImageError(event) {
                     </div>
                 </div>
 
+                <div class="px-5 sm:px-6 pt-4">
+                    <label for="registration-item-search" class="sr-only">
+                        Search registration history items
+                    </label>
+                    <div class="relative max-w-md">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none"></i>
+                        <input
+                            id="registration-item-search"
+                            v-model="registrationSearch"
+                            type="search"
+                            placeholder="Search item name, property number, category..."
+                            class="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                        />
+                    </div>
+                </div>
+
                 <div
                     class="px-5 sm:px-6 py-4 border-b border-slate-100 bg-purple-50/40"
                 >
@@ -2453,15 +2643,38 @@ function handleImageError(event) {
                             </h3>
                         </div>
 
-                        <div
-                            class="inline-flex items-center self-start sm:self-auto gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
-                        >
-                            <i class="fa-solid fa-box-open text-purple-600"></i>
+                        <div class="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                            <div
+                                class="inline-flex items-center gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
+                            >
+                                <i class="fa-solid fa-box-open text-purple-600"></i>
+                                <span class="text-sm font-bold">
+                                    {{ registrationCount }}
+                                    {{ registrationCount === 1 ? 'Item' : 'Items' }}
+                                </span>
+                            </div>
 
-                            <span class="text-sm font-bold">
-                                {{ registrationCount }}
-                                {{ registrationCount === 1 ? 'Item' : 'Items' }}
-                            </span>
+                            <button
+                                type="button"
+                                @click="exportRegistrationHistoryToExcel"
+                                :disabled="registrationLoading || registeredItems.length === 0"
+                                title="Export registration history records from all dates to Excel-compatible CSV"
+                                class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                <i class="fa-solid fa-file-excel"></i>
+                                Export Excel
+                            </button>
+
+                            <button
+                                type="button"
+                                @click="printRegistrationHistory"
+                                :disabled="registrationLoading || registeredItems.length === 0"
+                                title="Print registration history records from all dates"
+                                class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-purple-600 text-white text-sm font-semibold shadow-sm hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                <i class="fa-solid fa-print"></i>
+                                Print
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -2515,7 +2728,16 @@ function handleImageError(event) {
                     </p>
                 </div>
 
-                <div v-else class="overflow-x-auto">
+                <div
+                    v-else-if="filteredRegisteredItems.length === 0"
+                    class="px-6 py-10 text-center"
+                >
+                    <i class="fa-solid fa-magnifying-glass text-2xl text-slate-300 mb-3"></i>
+                    <p class="text-sm font-semibold text-slate-600">No matching items found</p>
+                    <p class="text-xs text-slate-400 mt-1">Try another item name, property number, or category.</p>
+                </div>
+
+                <div v-else class="max-h-[230px] overflow-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100">
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-slate-50 border-b border-slate-200">
@@ -2535,7 +2757,7 @@ function handleImageError(event) {
 
                         <tbody class="divide-y divide-slate-100">
                             <tr
-                                v-for="item in registeredItems"
+                                v-for="item in filteredRegisteredItems"
                                 :key="item.id"
                                 class="hover:bg-purple-50/40 transition-colors"
                             >
@@ -2734,7 +2956,7 @@ function handleImageError(event) {
 
                 <div
                     v-else
-                    class="max-h-[300px] min-h-[205px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
+                    class="max-h-[230px] min-h-[205px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
                 >
                     <table class="w-full min-w-[900px] text-left border-collapse">
                         <thead class="sticky top-0 z-10">
