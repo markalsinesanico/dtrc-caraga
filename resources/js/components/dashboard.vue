@@ -1,6 +1,3 @@
-Dashboard.vue
-
-
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
@@ -109,6 +106,7 @@ const isSubmittingRequest = ref(false)
 const requestForm = ref({
     requestorName: '',
     departmentOffice: '',
+    referenceNoSource: '',
     itemId: null,
     itemName: '',
     quantity: 1,
@@ -125,12 +123,12 @@ const currentModalImageData = ref('')
 */
 const addForm = ref({
     name: '',
+    iarNumber: '',
     propertyNo: '',
     category: 'Office Supplies',
     unit: 'ream',
     quantity: 10,
     reorderLevel: 5,
-    unitCost: 150.0,
     image: '',
 })
 
@@ -142,7 +140,6 @@ const editForm = ref({
     unit: 'ream',
     quantity: 0,
     reorderLevel: 1,
-    unitCost: 0,
     image: '',
 })
 
@@ -221,16 +218,6 @@ const outOfStockItems = computed(() =>
 */
 const totalItems = computed(() => inventory.value.length)
 
-const totalValue = computed(() =>
-    inventory.value
-        .filter((item) => item.quantity > 0)
-        .reduce(
-            (total, item) =>
-                total + item.quantity * item.unitCost,
-            0,
-        ),
-)
-
 const lowStockCount = computed(() =>
     inventory.value.filter(
         (item) =>
@@ -252,14 +239,6 @@ const availableCount = computed(() =>
 | Helpers
 |--------------------------------------------------------------------------
 */
-function formatPeso(amount) {
-    return new Intl.NumberFormat('en-PH', {
-        style: 'currency',
-        currency: 'PHP',
-        minimumFractionDigits: 2,
-    }).format(Number(amount) || 0)
-}
-
 function itemImage(item) {
     return item?.image || DEFAULT_IMAGE
 }
@@ -273,6 +252,7 @@ function fromApi(item) {
     return {
         id: item.id,
         propertyNo: item.property_no,
+        iarNumber: item.iar_number || '',
         name: item.name,
         category: item.category,
         unit: item.unit,
@@ -287,6 +267,7 @@ function fromApi(item) {
 function toApi(item) {
     return {
         property_no: item.propertyNo,
+        iar_number: item.iarNumber || null,
         name: item.name,
         category: item.category,
         unit: item.unit,
@@ -316,6 +297,8 @@ function fromHistoryApi(item) {
         id: item.id,
 
         propertyNo: item.property_no,
+
+        iarNumber: item.iar_number || '',
 
         name: item.name,
 
@@ -532,6 +515,7 @@ function fromRequestApi(item) {
         id: item.id,
         requestorName: item.requestor_name,
         departmentOffice: item.department_office,
+        referenceNoSource: item.reference_no_source || '',
         inventoryId: item.inventory_id,
         propertyNo: item.property_no || '-',
         itemName: item.item_name,
@@ -655,6 +639,7 @@ async function printRequestHistory() {
                         <td>${escapePrintHtml(formatRequestTime(request.requestedAt))}</td>
                         <td>${escapePrintHtml(request.requestorName)}</td>
                         <td>${escapePrintHtml(request.departmentOffice)}</td>
+                        <td>${escapePrintHtml(request.referenceNoSource || '-')}</td>
                         <td>${escapePrintHtml(request.propertyNo)}</td>
                         <td>${escapePrintHtml(request.itemName)}</td>
                         <td>${escapePrintHtml(request.unit)}</td>
@@ -842,9 +827,10 @@ async function printRequestHistory() {
                 <th style="width: 5%;">Request ID</th>
                 <th style="width: 6%;">Inventory ID</th>
                 <th style="width: 7%;">Time</th>
-                <th style="width: 12%;">Requestor / Name</th>
-                <th style="width: 13%;">Department / Office</th>
-                <th style="width: 10%;">Property Number</th>
+                <th style="width: 11%;">Requestor / Name</th>
+                <th style="width: 12%;">Department / Office</th>
+                <th style="width: 12%;">Reference No. / Source</th>
+                <th style="width: 9%;">Property Number</th>
                 <th style="width: 17%;">Item Name</th>
                 <th style="width: 6%;">Unit</th>
                 <th style="width: 7%;">Requested Qty.</th>
@@ -920,7 +906,6 @@ async function exportRegistrationHistoryToExcel() {
             'Unit',
             'Registered Quantity',
             'Reorder Level',
-            'Unit Cost (PHP)',
         ]
 
         const rows = allRegisteredItems.map((item) => [
@@ -933,7 +918,6 @@ async function exportRegistrationHistoryToExcel() {
             item.unit,
             item.registeredQty,
             item.reorderLevel,
-            Number(item.unitCost || 0).toFixed(2),
         ])
 
         const csv = '\uFEFF' + [headers, ...rows]
@@ -981,7 +965,6 @@ async function printRegistrationHistory() {
             <td>${escapePrintHtml(item.category)}</td>
             <td>${escapePrintHtml(item.unit)}</td>
             <td>${escapePrintHtml(item.registeredQty)}</td>
-            <td>${escapePrintHtml(Number(item.unitCost || 0).toFixed(2))}</td>
         </tr>
     `).join('')
 
@@ -1012,7 +995,7 @@ tr:nth-child(even) { background: #f8fafc; }
 <h1>Inventory Registration History — All Dates</h1>
 <p>Total records across all registration dates: ${allRegisteredItems.length}</p>
 <table>
-<thead><tr><th>#</th><th>Registration ID</th><th>Registration Date</th><th>Registered At</th><th>Property Number</th><th>Item Name</th><th>Category</th><th>Unit</th><th>Registered Qty</th><th>Unit Cost (PHP)</th></tr></thead>
+<thead><tr><th>#</th><th>Registration ID</th><th>Registration Date</th><th>Registered At</th><th>Property Number</th><th>Item Name</th><th>Category</th><th>Unit</th><th>Registered Qty</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>
 </body>
@@ -1113,12 +1096,12 @@ function handleImageUrlInput(url, target = 'add') {
 function openAddItemModal() {
     addForm.value = {
         name: '',
+        iarNumber: '',
         propertyNo: '',
         category: 'Office Supplies',
         unit: 'ream',
         quantity: 10,
         reorderLevel: 5,
-        unitCost: 150.0,
         image: '',
     }
 
@@ -1147,14 +1130,13 @@ async function handleAddItem() {
 
     const payload = toApi({
         name: addForm.value.name.trim(),
+        iarNumber: addForm.value.iarNumber.trim(),
         propertyNo: addForm.value.propertyNo.trim(),
         category: addForm.value.category,
         unit: addForm.value.unit,
         quantity,
         reorderLevel:
             Number(addForm.value.reorderLevel) || 5,
-        unitCost:
-            Number(addForm.value.unitCost) || 0,
         image: addForm.value.image || '',
     })
 
@@ -1302,6 +1284,7 @@ function openRequestModal(id) {
     requestForm.value = {
         requestorName: '',
         departmentOffice: '',
+        referenceNoSource: '',
         itemId: item.id,
         itemName: item.name,
         quantity: 1,
@@ -1388,6 +1371,8 @@ async function submitInventoryRequest() {
                     requestForm.value.requestorName.trim(),
                 department_office:
                     requestForm.value.departmentOffice,
+                reference_no_source:
+                    requestForm.value.referenceNoSource.trim() || null,
                 inventory_id: item.id,
                 quantity,
                 request_date:
@@ -1566,7 +1551,6 @@ function openEditItemModal(id) {
         unit: item.unit,
         quantity: item.quantity,
         reorderLevel: item.reorderLevel,
-        unitCost: item.unitCost,
         image: item.image || '',
     }
 
@@ -1599,8 +1583,6 @@ async function handleSaveEditItem() {
         Number(editForm.value.quantity) || 0
     item.reorderLevel =
         Number(editForm.value.reorderLevel) || 1
-    item.unitCost =
-        Number(editForm.value.unitCost) || 0
 
     if (editForm.value.image) {
         item.image = editForm.value.image
@@ -1830,46 +1812,6 @@ function handleImageError(event) {
                     </div>
                 </div>
 
-                <!-- TOTAL VALUE -->
-                <div
-                    class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
-                >
-                    <div
-                        class="absolute top-0 right-0 w-24 h-24 -mr-6 -mt-6 bg-emerald-100/50 rounded-full group-hover:scale-110 transition-transform pointer-events-none"
-                    ></div>
-
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Total Inventory Value
-                            </p>
-
-                            <h3
-                                class="text-2xl font-black text-emerald-700 mt-1"
-                            >
-                                {{ formatPeso(totalValue) }}
-                            </h3>
-
-                            <p
-                                class="text-xs text-slate-400 mt-1 flex items-center"
-                            >
-                                <i
-                                    class="fa-solid fa-peso-sign text-[10px] mr-1 text-emerald-500"
-                                ></i>
-                                Total active stock worth
-                            </p>
-                        </div>
-
-                        <div
-                            class="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-xl font-bold border border-emerald-200/60 shadow-inner"
-                        >
-                            <i class="fa-solid fa-coins"></i>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- LOW STOCK -->
                 <div
                     class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
@@ -2080,10 +2022,6 @@ function handleImageError(event) {
                                     Category
                                 </th>
 
-                                <th class="py-3.5 px-4 text-right">
-                                    Unit Cost
-                                </th>
-
                                 <th class="py-3.5 px-4 text-center">
                                     Available Stock
                                 </th>
@@ -2128,18 +2066,10 @@ function handleImageError(event) {
                                     >
                                         {{ item.name }}
                                     </div>
+                                    <p class="text-xs text-purple-700 font-semibold mt-1">
+                                        IAR No.: {{ item.iarNumber || 'Not set' }}
+                                    </p>
 
-                                    <div
-                                        class="text-[11px] text-slate-400"
-                                    >
-                                        Total Value:
-                                        {{
-                                            formatPeso(
-                                                item.quantity *
-                                                item.unitCost
-                                            )
-                                        }}
-                                    </div>
                                 </td>
 
                                 <td class="py-3 px-4">
@@ -2148,12 +2078,6 @@ function handleImageError(event) {
                                     >
                                         {{ item.category }}
                                     </span>
-                                </td>
-
-                                <td
-                                    class="py-3 px-4 text-right font-semibold text-slate-700 text-sm"
-                                >
-                                    {{ formatPeso(item.unitCost) }}
                                 </td>
 
                                 <td class="py-3 px-4 text-center">
@@ -2307,17 +2231,13 @@ function handleImageError(event) {
                             >
                                 {{ item.name }}
                             </h4>
+                            <p class="text-xs text-purple-700 font-semibold mt-1">
+                                IAR No.: {{ item.iarNumber || 'Not set' }}
+                            </p>
 
                             <div
                                 class="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 text-xs"
                             >
-                                <span class="text-slate-500">
-                                    Unit Cost:
-                                    <strong class="text-slate-700">
-                                        {{ formatPeso(item.unitCost) }}
-                                    </strong>
-                                </span>
-
                                 <span class="text-slate-500">
                                     Stock:
                                     <strong
@@ -2444,10 +2364,6 @@ function handleImageError(event) {
                                     Category
                                 </th>
 
-                                <th class="py-3.5 px-4 text-right">
-                                    Unit Cost
-                                </th>
-
                                 <th class="py-3.5 px-4 text-center">
                                     Status
                                 </th>
@@ -2481,10 +2397,13 @@ function handleImageError(event) {
                                     {{ item.propertyNo }}
                                 </td>
 
-                                <td
-                                    class="py-3 px-4 font-bold text-slate-800 text-sm"
-                                >
-                                    {{ item.name }}
+                                <td class="py-3 px-4">
+                                    <div class="font-bold text-slate-800 text-sm">
+                                        {{ item.name }}
+                                    </div>
+                                    <p class="text-xs text-purple-700 font-semibold mt-1">
+                                        IAR No.: {{ item.iarNumber || 'Not set' }}
+                                    </p>
                                 </td>
 
                                 <td class="py-3 px-4">
@@ -2493,12 +2412,6 @@ function handleImageError(event) {
                                     >
                                         {{ item.category }}
                                     </span>
-                                </td>
-
-                                <td
-                                    class="py-3 px-4 text-right font-semibold text-slate-700 text-sm"
-                                >
-                                    {{ formatPeso(item.unitCost) }}
                                 </td>
 
                                 <td class="py-3 px-4 text-center">
@@ -2796,6 +2709,9 @@ function handleImageError(event) {
                                             <p class="text-xs text-slate-400 mt-0.5">
                                                 {{ item.category }}
                                             </p>
+                                            <p class="text-xs text-purple-700 font-semibold mt-1">
+                                                IAR No.: {{ item.iarNumber || 'Not set' }}
+                                            </p>
                                         </div>
                                     </div>
                                 </td>
@@ -2974,6 +2890,10 @@ function handleImageError(event) {
                                 </th>
 
                                 <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
+                                    Reference No. / Source
+                                </th>
+
+                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
                                     Property Number
                                 </th>
 
@@ -3020,6 +2940,12 @@ function handleImageError(event) {
                                         class="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold"
                                     >
                                         {{ request.departmentOffice }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 sm:px-6 py-4">
+                                    <span class="text-xs text-slate-600">
+                                        {{ request.referenceNoSource || '-' }}
                                     </span>
                                 </td>
 
@@ -3263,6 +3189,21 @@ function handleImageError(event) {
                             <label
                                 class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
                             >
+                                IAR Number
+                            </label>
+
+                            <input
+                                v-model="addForm.iarNumber"
+                                type="text"
+                                placeholder="e.g. IAR-2026-001"
+                                class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-mono text-purple-900 font-bold focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label
+                                class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                            >
                                 Category *
                             </label>
 
@@ -3340,24 +3281,7 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Estimated Unit Cost (₱) *
-                        </label>
-
-                        <input
-                            v-model.number="addForm.unitCost"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            required
-                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        />
-                    </div>
-
-                    <div
+<div
                         class="pt-4 flex justify-end space-x-3 border-t border-slate-100"
                     >
                         <button
@@ -3496,6 +3420,20 @@ function handleImageError(event) {
                                 {{ department }}
                             </option>
                         </select>
+                    </div>
+
+                    <div>
+                        <label
+                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
+                        >
+                            Reference No. / Source
+                        </label>
+                        <input
+                            v-model="requestForm.referenceNoSource"
+                            type="text"
+                            placeholder="e.g. RIS No. / Office Memo / Source"
+                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        />
                     </div>
 
                     <div>
@@ -3965,24 +3903,7 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Unit Cost (₱) *
-                        </label>
-
-                        <input
-                            v-model.number="editForm.unitCost"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            required
-                            class="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        />
-                    </div>
-
-                    <div
+<div
                         class="pt-4 flex justify-between items-center border-t border-slate-100"
                     >
                         <button

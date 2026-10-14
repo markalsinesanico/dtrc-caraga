@@ -12,111 +12,56 @@ class InventoryController extends Controller
 {
     public function index()
     {
-        return response()->json(
-            Inventory::orderBy('name')->get()
-        );
+        return response()->json(Inventory::orderBy('name')->get());
     }
 
+    public function registrationHistory(Request $request)
+    {
+        $validated = $request->validate([
+            'date' => ['nullable', 'date_format:Y-m-d'],
+        ]);
 
-// Replace InventoryController::registrationHistory() with this method.
-// It supports both: ?date=YYYY-MM-DD (single day) and no date (all dates).
-public function registrationHistory(Request $request)
-{
-    $validated = $request->validate([
-        'date' => ['nullable', 'date', 'date_format:Y-m-d'],
-    ]);
+        $query = InventoryRegistrationHistory::query();
 
-    $query = InventoryRegistrationHistory::query();
+        if (!empty($validated['date'])) {
+            $query->whereDate('registered_date', $validated['date']);
+        }
 
-    if (!empty($validated['date'])) {
-        $query->whereDate('registered_date', $validated['date']);
-    }
+        $history = $query
+            ->orderByDesc('registered_at')
+            ->orderByDesc('id')
+            ->get();
 
-    $history = $query
-        ->orderByDesc('registered_at')
-        ->orderByDesc('id')
-        ->get();
-
-    return response()->json(
-        $history->map(function (InventoryRegistrationHistory $item) {
+        return response()->json($history->map(function (InventoryRegistrationHistory $item) {
             return [
                 'id' => $item->id,
                 'inventory_id' => $item->inventory_id,
+                'iar_number' => $item->iar_number,
                 'property_no' => $item->property_no,
                 'name' => $item->name,
                 'category' => $item->category,
                 'unit' => $item->unit,
                 'registered_qty' => $item->registered_qty,
                 'reorder_level' => $item->reorder_level,
-                'unit_cost' => $item->unit_cost,
                 'image' => $item->image,
                 'registered_date' => $item->registered_date?->format('Y-m-d'),
                 'registered_at' => $item->registered_at?->toISOString(),
                 'created_at' => $item->created_at?->toISOString(),
             ];
-        })
-    );
-}
-
-// Also verify InventoryController::store() creates an InventoryRegistrationHistory
-// row in the same DB transaction as Inventory::create(). A new inventory item
-// should not be considered successfully registered unless both inserts succeed.
-
+        }));
+    }
 
     public function requestHistory(Request $request)
     {
-        /*
-        |--------------------------------------------------------------------------
-        | Request History Date
-        |--------------------------------------------------------------------------
-        |
-        | date is OPTIONAL.
-        |
-        | /api/inventory/request-history?date=2026-09-21
-        |     -> returns only requests for September 21, 2026.
-        |
-        | /api/inventory/request-history
-        |     -> returns ALL request records.
-        |
-        | The second behavior is used by the Print button.
-        |
-        |--------------------------------------------------------------------------
-        */
-
         $validated = $request->validate([
-            'date' => [
-                'nullable',
-                'date',
-                'date_format:Y-m-d',
-            ],
+            'date' => ['nullable', 'date_format:Y-m-d'],
         ]);
 
         $query = InventoryRequest::query();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Filter by Date Only When a Date Was Supplied
-        |--------------------------------------------------------------------------
-        */
-
         if (!empty($validated['date'])) {
-            $query->whereDate(
-                'request_date',
-                $validated['date']
-            );
+            $query->whereDate('request_date', $validated['date']);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ordering
-        |--------------------------------------------------------------------------
-        |
-        | Newest request date first.
-        | Then newest request time.
-        | Then newest ID.
-        |
-        |--------------------------------------------------------------------------
-        */
 
         $requests = $query
             ->orderByDesc('request_date')
@@ -124,342 +69,149 @@ public function registrationHistory(Request $request)
             ->orderByDesc('id')
             ->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Return Request Data
-        |--------------------------------------------------------------------------
-        */
-
-        return response()->json(
-            $requests->map(function (
-                InventoryRequest $item
-            ) {
-                return [
-                    'id' => $item->id,
-
-                    'inventory_id' =>
-                        $item->inventory_id,
-
-                    'requestor_name' =>
-                        $item->requestor_name,
-
-                    'department_office' =>
-                        $item->department_office,
-
-                    'property_no' =>
-                        $item->property_no,
-
-                    'item_name' =>
-                        $item->item_name,
-
-                    'unit' =>
-                        $item->unit,
-
-                    'requested_quantity' =>
-                        $item->requested_quantity,
-
-                    'request_date' =>
-                        $item->request_date?->format('Y-m-d'),
-
-                    'requested_at' =>
-                        $item->requested_at?->toISOString(),
-
-                    'created_at' =>
-                        $item->created_at?->toISOString(),
-                ];
-            })
-        );
+        return response()->json($requests->map(function (InventoryRequest $item) {
+            return [
+                'id' => $item->id,
+                'inventory_id' => $item->inventory_id,
+                'requestor_name' => $item->requestor_name,
+                'department_office' => $item->department_office,
+                'reference_no_source' => $item->reference_no_source,
+                'property_no' => $item->property_no,
+                'item_name' => $item->item_name,
+                'unit' => $item->unit,
+                'requested_quantity' => $item->requested_quantity,
+                'request_date' => $item->request_date?->format('Y-m-d'),
+                'requested_at' => $item->requested_at?->toISOString(),
+                'created_at' => $item->created_at?->toISOString(),
+            ];
+        }));
     }
 
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'property_no' => [
-                'required',
-                'string',
-                'max:255',
-                'unique:inventories,property_no',
-            ],
-
-            'name' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'category' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'unit' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'quantity' => [
-                'required',
-                'integer',
-                'min:0',
-            ],
-
-            'reorder_level' => [
-                'required',
-                'integer',
-                'min:1',
-            ],
-
-            'unit_cost' => [
-                'required',
-                'numeric',
-                'min:0',
-            ],
-
-            'image' => [
-                'nullable',
-                'string',
-            ],
+            'property_no' => ['required', 'string', 'max:255', 'unique:inventories,property_no'],
+            'iar_number' => ['nullable', 'string', 'max:255'],
+            'name' => ['required', 'string', 'max:255'],
+            'category' => ['required', 'string', 'max:255'],
+            'unit' => ['required', 'string', 'max:255'],
+            'quantity' => ['required', 'integer', 'min:0'],
+            'reorder_level' => ['required', 'integer', 'min:1'],
+            'image' => ['nullable', 'string'],
         ]);
 
         $result = DB::transaction(function () use ($validated) {
             $inventory = Inventory::create($validated);
-
-            $registeredQuantity =
-                (int) $validated['quantity'];
+            $now = now();
 
             InventoryRegistrationHistory::create([
-                'inventory_id' =>
-                    $inventory->id,
-
-                'property_no' =>
-                    $inventory->property_no,
-
-                'name' =>
-                    $inventory->name,
-
-                'category' =>
-                    $inventory->category,
-
-                'unit' =>
-                    $inventory->unit,
-
-                'registered_qty' =>
-                    $registeredQuantity,
-
-                'reorder_level' =>
-                    $inventory->reorder_level,
-
-                'unit_cost' =>
-                    $inventory->unit_cost,
-
-                'image' =>
-                    $inventory->image,
-
-                'registered_date' =>
-                    now()->toDateString(),
-
-                'registered_at' =>
-                    now(),
+                'inventory_id' => $inventory->id,
+                'iar_number' => $inventory->iar_number,
+                'property_no' => $inventory->property_no,
+                'name' => $inventory->name,
+                'category' => $inventory->category,
+                'unit' => $inventory->unit,
+                'registered_qty' => (int) $inventory->quantity,
+                'reorder_level' => $inventory->reorder_level,
+                'image' => $inventory->image,
+                'registered_date' => $now->toDateString(),
+                'registered_at' => $now,
             ]);
 
             return $inventory->fresh();
         });
 
         return response()->json([
-            'message' =>
-                'Inventory item registered successfully.',
-
-            'data' =>
-                $result,
+            'message' => 'Inventory item registered successfully.',
+            'data' => $result,
         ], 201);
     }
 
     public function requestItem(Request $request)
     {
         $validated = $request->validate([
-            'requestor_name' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'department_office' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'inventory_id' => [
-                'required',
-                'integer',
-                'exists:inventories,id',
-            ],
-
-            'quantity' => [
-                'required',
-                'integer',
-                'min:1',
-            ],
-
-            'request_date' => [
-                'required',
-                'date_format:Y-m-d',
-            ],
+            'requestor_name' => ['required', 'string', 'max:255'],
+            'department_office' => ['required', 'string', 'max:255'],
+            'reference_no_source' => ['nullable', 'string', 'max:255'],
+            'inventory_id' => ['required', 'integer', 'exists:inventories,id'],
+            'quantity' => ['required', 'integer', 'min:1'],
+            'request_date' => ['required', 'date_format:Y-m-d'],
         ]);
 
         $result = DB::transaction(function () use ($validated) {
-            $inventory = Inventory::lockForUpdate()
-                ->findOrFail(
-                    $validated['inventory_id']
-                );
-
-            $quantity =
-                (int) $validated['quantity'];
+            $inventory = Inventory::lockForUpdate()->findOrFail($validated['inventory_id']);
+            $quantity = (int) $validated['quantity'];
 
             if ($quantity > $inventory->quantity) {
-                abort(
-                    422,
-                    "Insufficient stock. Only {$inventory->quantity} {$inventory->unit} available."
-                );
+                abort(422, "Insufficient stock. Only {$inventory->quantity} {$inventory->unit} available.");
             }
 
-            $inventoryRequest =
-                InventoryRequest::create([
-                    'inventory_id' =>
-                        $inventory->id,
+            $inventoryRequest = InventoryRequest::create([
+                'inventory_id' => $inventory->id,
+                'requestor_name' => $validated['requestor_name'],
+                'department_office' => $validated['department_office'],
+                'reference_no_source' => $validated['reference_no_source'] ?? null,
+                'property_no' => $inventory->property_no,
+                'item_name' => $inventory->name,
+                'unit' => $inventory->unit,
+                'requested_quantity' => $quantity,
+                'request_date' => $validated['request_date'],
+                'requested_at' => now(),
+            ]);
 
-                    'requestor_name' =>
-                        $validated['requestor_name'],
-
-                    'department_office' =>
-                        $validated['department_office'],
-
-                    'property_no' =>
-                        $inventory->property_no,
-
-                    'item_name' =>
-                        $inventory->name,
-
-                    'unit' =>
-                        $inventory->unit,
-
-                    'requested_quantity' =>
-                        $quantity,
-
-                    'request_date' =>
-                        $validated['request_date'],
-
-                    'requested_at' =>
-                        now(),
-                ]);
-
+            // Keep the existing behavior: recording a request deducts available stock.
             $inventory->quantity -= $quantity;
-
             $inventory->save();
 
             return [
-                'request' =>
-                    $inventoryRequest->fresh(),
-
-                'inventory' =>
-                    $inventory->fresh(),
+                'request' => $inventoryRequest->fresh(),
+                'inventory' => $inventory->fresh(),
             ];
         });
 
         return response()->json([
-            'message' =>
-                'Inventory request recorded successfully.',
-
-            'data' =>
-                $result,
+            'message' => 'Inventory request recorded successfully.',
+            'data' => $result,
         ], 201);
     }
 
     public function show(Inventory $inventory)
     {
-        return response()->json(
-            $inventory
-        );
+        return response()->json($inventory);
     }
 
-    public function update(
-        Request $request,
-        Inventory $inventory
-    ) {
+    public function update(Request $request, Inventory $inventory)
+    {
         $validated = $request->validate([
             'property_no' => [
                 'required',
                 'string',
                 'max:255',
-                'unique:inventories,property_no,' .
-                    $inventory->id,
+                'unique:inventories,property_no,' . $inventory->id,
             ],
-
-            'name' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'category' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'unit' => [
-                'required',
-                'string',
-                'max:255',
-            ],
-
-            'quantity' => [
-                'required',
-                'integer',
-                'min:0',
-            ],
-
-            'reorder_level' => [
-                'required',
-                'integer',
-                'min:1',
-            ],
-
-            'unit_cost' => [
-                'required',
-                'numeric',
-                'min:0',
-            ],
-
-            'image' => [
-                'nullable',
-                'string',
-            ],
+            'iar_number' => ['nullable', 'string', 'max:255'],
+            'name' => ['required', 'string', 'max:255'],
+            'category' => ['required', 'string', 'max:255'],
+            'unit' => ['required', 'string', 'max:255'],
+            'quantity' => ['required', 'integer', 'min:0'],
+            'reorder_level' => ['required', 'integer', 'min:1'],
+            'image' => ['nullable', 'string'],
         ]);
 
-        $inventory->update(
-            $validated
-        );
+        $inventory->update($validated);
 
         return response()->json([
-            'message' =>
-                'Inventory item updated successfully.',
-
-            'data' =>
-                $inventory->fresh(),
+            'message' => 'Inventory item updated successfully.',
+            'data' => $inventory->fresh(),
         ]);
     }
 
-    public function destroy(
-        Inventory $inventory
-    ) {
+    public function destroy(Inventory $inventory)
+    {
         $inventory->delete();
 
         return response()->json([
-            'message' =>
-                'Inventory item deleted successfully.',
+            'message' => 'Inventory item deleted successfully.',
         ]);
     }
 }

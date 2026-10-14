@@ -19,7 +19,6 @@ return new class extends Migration
         $table->string('unit');
         $table->unsignedInteger('quantity')->default(0);
         $table->unsignedInteger('reorder_level')->default(1);
-        $table->decimal('unit_cost', 12, 2)->default(0);
         $table->text('image')->nullable();
         $table->timestamps();
         });

@@ -16,6 +16,7 @@ class InventoryRequest extends Model
         'inventory_id',
         'requestor_name',
         'department_office',
+        'reference_no_source',
         'property_no',
         'item_name',
         'unit',

@@ -11,13 +11,13 @@ class InventoryRegistrationHistory extends Model
 
     protected $fillable = [
         'inventory_id',
+        'iar_number',
         'property_no',
         'name',
         'category',
         'unit',
         'registered_qty',
         'reorder_level',
-        'unit_cost',
         'image',
         'registered_date',
         'registered_at',
@@ -26,14 +26,10 @@ class InventoryRegistrationHistory extends Model
     protected $casts = [
         'registered_qty' => 'integer',
         'reorder_level' => 'integer',
-        'unit_cost' => 'decimal:2',
         'registered_date' => 'date',
         'registered_at' => 'datetime',
     ];
 
-    /**
-     * The original inventory record, if it still exists.
-     */
     public function inventory(): BelongsTo
     {
         return $this->belongsTo(Inventory::class);

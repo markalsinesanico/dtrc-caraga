@@ -10,7 +10,7 @@
     <meta name="csrf-token"
           content="{{ csrf_token() }}">
 
-    <title>Material Management Office</title>
+    <title>Materials Management Section </title>
 
     @vite('resources/js/app.js')
 

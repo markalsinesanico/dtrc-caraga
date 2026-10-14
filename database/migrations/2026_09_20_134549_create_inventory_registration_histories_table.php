@@ -48,7 +48,6 @@ return new class extends Migration
             $table->unsignedInteger('registered_qty');
 
             $table->unsignedInteger('reorder_level')->default(1);
-            $table->decimal('unit_cost', 12, 2)->default(0);
             $table->text('image')->nullable();
 
             /*
