@@ -14,6 +14,7 @@ class InventoryRegistrationHistory extends Model
         'iar_number',
         'property_no',
         'name',
+        'description',
         'category',
         'unit',
         'registered_qty',

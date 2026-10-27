@@ -1,4 +1,3 @@
-
 <?php
 
 use Illuminate\Http\Request;
@@ -28,3 +27,5 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::apiResource('inventory', InventoryController::class);
 });
+
+

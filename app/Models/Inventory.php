@@ -11,6 +11,7 @@ class Inventory extends Model
         'iar_number',
         'property_no',
         'name',
+        'description',
         'category',
         'unit',
         'quantity',
@@ -33,3 +34,4 @@ class Inventory extends Model
         return $this->hasMany(InventoryRegistrationHistory::class);
     }
 }
+

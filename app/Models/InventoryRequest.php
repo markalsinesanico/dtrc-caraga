@@ -2,16 +2,11 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class InventoryRequest extends Model
 {
-    use HasFactory;
-
-    protected $table = 'inventory_requests';
-
     protected $fillable = [
         'inventory_id',
         'requestor_name',

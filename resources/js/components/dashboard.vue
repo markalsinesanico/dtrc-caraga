@@ -1,3 +1,4 @@
+
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
@@ -76,6 +77,26 @@ const departments = [
 */
 const inventory = ref([])
 const isSaving = ref(false)
+
+// Track kung aling description ang nakabukas
+const expandedDescriptions = ref({})
+
+function descriptionKey(item) {
+    return String(item.id ?? item.propertyNo ?? item.name)
+}
+
+function toggleDescription(item) {
+    const key = descriptionKey(item)
+
+    expandedDescriptions.value[key] =
+        !expandedDescriptions.value[key]
+}
+
+function isDescriptionExpanded(item) {
+    return Boolean(
+        expandedDescriptions.value[descriptionKey(item)]
+    )
+}
 
 
 async function logout() {
@@ -363,6 +384,7 @@ const currentModalImageData = ref('')
 */
 const addForm = ref({
     name: '',
+    description: '',
     iarNumber: '',
     propertyNo: '',
     category: 'Office Supplies',
@@ -375,6 +397,7 @@ const addForm = ref({
 const editForm = ref({
     id: '',
     name: '',
+    description: '',
     propertyNo: '',
     category: 'Office Supplies',
     unit: 'ream',
@@ -483,6 +506,59 @@ function itemImage(item) {
     return item?.image || DEFAULT_IMAGE
 }
 
+function printAvailableInventory() {
+    // Use the complete inventory array, not availableItems, so zero-stock items are included.
+    const items = [...inventory.value].sort((a, b) => a.name.localeCompare(b.name))
+    if (!items.length) {
+        window.alert('There are no inventory items to print.')
+        return
+    }
+
+    const rows = items.map(item => `
+        <tr>
+            <td>${escapePrintHtml(item.name || '-')}</td>
+            <td>${escapePrintHtml(item.description || '-')}</td>
+            <td>${escapePrintHtml(item.propertyNo || '-')}</td>
+            <td>${escapePrintHtml(item.unit || '-')}</td>
+            <td class="number">${Math.max(0, Number(item.quantity) || 0)}</td>
+        </tr>
+    `).join('')
+
+    const printWindow = window.open('', '_blank', 'width=1100,height=800')
+    if (!printWindow) {
+        window.alert('Please allow pop-ups for this site to print the inventory report.')
+        return
+    }
+
+    printWindow.document.open()
+    printWindow.document.write(`<!DOCTYPE html>
+    <html lang="en"><head><meta charset="UTF-8"><title>Complete Inventory Stock Report</title>
+    <style>
+        @page { size: A4 landscape; margin: 12mm; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; font-size: 10px; }
+        h1 { margin: 0 0 5px; font-size: 20px; }
+        .subtitle { margin: 0 0 16px; color: #64748b; }
+        .summary { margin-bottom: 12px; font-size: 10px; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 7px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+        th { background: #f1f5f9; text-transform: uppercase; font-size: 9px; }
+        tbody tr:nth-child(even) { background: #f8fafc; }
+        th:nth-child(1) { width: 20%; } th:nth-child(2) { width: 40%; }
+        th:nth-child(3) { width: 16%; } th:nth-child(4) { width: 10%; }
+        th:nth-child(5) { width: 14%; }
+        .number { text-align: center; font-weight: bold; }
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    </style></head><body>
+    <h1>Complete Inventory Stock Report</h1>
+    <p class="subtitle">All registered inventory items, including out-of-stock items</p>
+    <p class="summary"><strong>Total items:</strong> ${items.length} &nbsp; | &nbsp; <strong>Generated:</strong> ${escapePrintHtml(new Date().toLocaleString('en-PH'))}</p>
+    <table><thead><tr><th>Name of Item</th><th>Description of Item</th><th>Stock Number</th><th>Unit of Measure</th><th>Current Available Stock</th></tr></thead>
+    <tbody>${rows}</tbody></table></body></html>`)
+    printWindow.document.close()
+    printWindow.focus()
+    setTimeout(() => printWindow.print(), 300)
+}
+
 /*
 |--------------------------------------------------------------------------
 | Current Inventory API Mapper
@@ -494,6 +570,7 @@ function fromApi(item) {
         propertyNo: item.property_no,
         iarNumber: item.iar_number || '',
         name: item.name,
+        description: item.description || '',
         category: item.category,
         unit: item.unit,
         quantity: Number(item.quantity) || 0,
@@ -509,6 +586,7 @@ function toApi(item) {
         property_no: item.propertyNo,
         iar_number: item.iarNumber || null,
         name: item.name,
+        description: item.description || '',
         category: item.category,
         unit: item.unit,
         quantity: Number(item.quantity) || 0,
@@ -529,6 +607,7 @@ function fromHistoryApi(item) {
         propertyNo: item.property_no,
         iarNumber: item.iar_number || '',
         name: item.name,
+        description: item.description || '',
         category: item.category,
         unit: item.unit,
         quantity: Number(item.registered_qty) || 0,
@@ -1273,6 +1352,7 @@ function handleImageUrlInput(url, target = 'add') {
 function openAddItemModal() {
     addForm.value = {
         name: '',
+        description: '',
         iarNumber: '',
         propertyNo: '',
         category: 'Office Supplies',
@@ -1307,6 +1387,7 @@ async function handleAddItem() {
 
     const payload = toApi({
         name: addForm.value.name.trim(),
+        description: addForm.value.description.trim(),
         iarNumber: addForm.value.iarNumber.trim(),
         propertyNo: addForm.value.propertyNo.trim(),
         category: addForm.value.category,
@@ -1667,6 +1748,7 @@ function openEditItemModal(id) {
     editForm.value = {
         id: item.id,
         name: item.name,
+        description: item.description || '',
         propertyNo: item.propertyNo,
         category: item.category,
         unit: item.unit,
@@ -1696,6 +1778,7 @@ async function handleSaveEditItem() {
     const snapshot = { ...item }
 
     item.name = editForm.value.name.trim()
+    item.description = editForm.value.description.trim()
     item.propertyNo =
         editForm.value.propertyNo.trim()
     item.category = editForm.value.category
@@ -2073,6 +2156,16 @@ function handleImageError(event) {
                             </option>
                         </select>
 
+                        <button
+                            type="button"
+                            @click="printAvailableInventory"
+                            class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold shadow-sm transition-colors"
+                            title="Print or save all inventory as PDF"
+                        >
+                            <i class="fa-solid fa-print"></i>
+                            <span>Print / PDF</span>
+                        </button>
+
                         <div
                             class="flex items-center bg-slate-200/80 p-1 rounded-xl"
                         >
@@ -2177,6 +2270,30 @@ function handleImageError(event) {
                                     >
                                         {{ item.name }}
                                     </div>
+                                    <div
+    v-if="item.description"
+    class="mt-1 max-w-sm flex items-start gap-2"
+>
+    <span
+        class="text-xs text-slate-500 min-w-0 flex-1"
+        :class="
+            isDescriptionExpanded(item)
+                ? 'whitespace-pre-wrap break-words'
+                : 'block truncate'
+        "
+    >
+        {{ item.description }}
+    </span>
+
+    <button
+        v-if="item.description.length > 50"
+        type="button"
+        @click.stop="toggleDescription(item)"
+        class="text-xs font-semibold text-purple-700 hover:text-purple-900 whitespace-nowrap"
+    >
+        {{ isDescriptionExpanded(item) ? 'See less' : 'See more' }}
+    </button>
+</div>
                                     <p class="text-xs text-purple-700 font-semibold mt-1">
                                         IAR No.: {{ item.iarNumber || 'Not set' }}
                                     </p>
@@ -2522,6 +2639,7 @@ function handleImageError(event) {
                                     >
                                         {{ item.name }}
                                     </div>
+                                    <p v-if="item.description" class="text-xs text-slate-500 mt-1 max-w-sm whitespace-normal">{{ item.description }}</p>
                                     <p class="text-xs text-purple-700 font-semibold mt-1">
                                         IAR No.: {{ item.iarNumber || 'Not set' }}
                                     </p>
@@ -3275,16 +3393,29 @@ function handleImageError(event) {
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
                         >
-                            Item Description / Name *
+                            Item Name *
                         </label>
 
                         <input
                             v-model="addForm.name"
                             type="text"
                             required
-                            placeholder="e.g. Bond Paper A4 80gsm High White"
+                            placeholder="e.g. Bond Paper"
                             class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
                         />
+                        <p class="text-[11px] text-slate-400 mt-1">Short, recognizable name of the inventory item.</p>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Description</label>
+                        <textarea
+                            v-model="addForm.description"
+                            rows="3"
+                            maxlength="2000"
+                            placeholder="e.g. A4 size, 80gsm, high-white multipurpose bond paper"
+                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+                        ></textarea>
+                        <p class="text-[11px] text-slate-400 mt-1">Add size, type, specifications, or other details. This will be saved in the database.</p>
                     </div>
 
                     <div
@@ -3914,7 +4045,7 @@ function handleImageError(event) {
                         <label
                             class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
                         >
-                            Item Description / Name *
+                            Item Name *
                         </label>
 
                         <input
@@ -3923,6 +4054,17 @@ function handleImageError(event) {
                             required
                             class="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
                         />
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Description</label>
+                        <textarea
+                            v-model="editForm.description"
+                            rows="3"
+                            maxlength="2000"
+                            placeholder="Size, type, specifications, or other details"
+                            class="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+                        ></textarea>
                     </div>
 
                     <div
