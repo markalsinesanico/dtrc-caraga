@@ -77,20 +77,57 @@ const departments = [
 const inventory = ref([])
 const isSaving = ref(false)
 
+
+async function logout() {
+    try {
+        await axios.get('/sanctum/csrf-cookie', {
+            headers: {
+                Accept: 'application/json',
+            },
+            withCredentials: true,
+            withXSRFToken: true,
+        });
+
+        await axios.post(
+            '/logout',
+            {},
+            {
+                headers: {
+                    Accept: 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                withCredentials: true,
+                withXSRFToken: true,
+            },
+        );
+
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('user');
+
+        window.location.href = '/login';
+    } catch (error) {
+        console.error(
+            'Logout failed:',
+            error.response?.status,
+            error.response?.data || error.message,
+        );
+
+        if (error.response?.status === 419) {
+            alert(
+                'Your session or CSRF token has expired. Refresh the page, log in again, and retry.',
+            );
+        } else {
+            alert(
+                error.response?.data?.message ||
+                'Logout failed. Please try again.',
+            );
+        }
+    }
+}
+
 /*
 |--------------------------------------------------------------------------
 | Inventory Registration History
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| registeredItems is completely separate from inventory.
-|
-| It contains snapshots returned from:
-|
-| GET /inventory/registration-history?date=YYYY-MM-DD
-|
-| Therefore changing inventory.quantity cannot change history.quantity.
-|
 |--------------------------------------------------------------------------
 */
 function getLocalDateString(date = new Date()) {
@@ -123,6 +160,188 @@ const showEditModal = ref(false)
 
 const showRequestModal = ref(false)
 const isSubmittingRequest = ref(false)
+
+// State para sa Item Requests Detail Modal
+const showItemRequestsModal = ref(false)
+const selectedItemForRequests = ref(null)
+const allItemRequests = ref([])
+
+async function openItemRequestsModal(item) {
+    selectedItemForRequests.value = item
+    showItemRequestsModal.value = true
+    
+    try {
+        const { data } = await axios.get('/api/inventory/request-history')
+        allItemRequests.value = (data || []).map(fromRequestApi)
+    } catch (error) {
+        console.error('Failed to load all item requests:', error)
+        allItemRequests.value = requestItems.value
+    }
+}
+
+function closeItemRequestsModal() {
+    showItemRequestsModal.value = false
+    selectedItemForRequests.value = null
+    allItemRequests.value = []
+}
+
+const itemRequestsList = computed(() => {
+    if (!selectedItemForRequests.value) return []
+    
+    const sourceList = allItemRequests.value.length > 0 ? allItemRequests.value : requestItems.value
+
+    return sourceList.filter(
+        (req) => req.inventoryId === selectedItemForRequests.value.id || 
+                 String(req.propertyNo).trim().toLowerCase() === String(selectedItemForRequests.value.propertyNo).trim().toLowerCase() ||
+                 String(req.itemName).trim().toLowerCase() === String(selectedItemForRequests.value.name).trim().toLowerCase()
+    )
+})
+
+/*
+|--------------------------------------------------------------------------
+| Print Stock Card Function (Katulad ng ibinigay na template)
+|--------------------------------------------------------------------------
+*/
+function printItemStockCard() {
+    const item = selectedItemForRequests.value
+    if (!item) return
+
+    const requests = itemRequestsList.value
+
+    const rows = requests.length > 0 ? requests.map(req => {
+        const qtyStr = Number(req.requestedQuantity || 0).toFixed(2)
+        return `
+            <tr>
+                <td>${escapePrintHtml(req.requestDate || '-')}</td>
+                <td>${escapePrintHtml(req.referenceNoSource || '-')}</td>
+                <td class="text-center">${escapePrintHtml(qtyStr)}</td>
+                <td class="text-center">${escapePrintHtml(qtyStr)}</td>
+                <td>${escapePrintHtml(req.departmentOffice || '-')}</td>
+                <td class="text-center">${escapePrintHtml(Number(item.quantity).toFixed(2))}</td>
+                <td class="text-center">Procured</td>
+            </tr>
+        `
+    }).join('') : `
+        <tr>
+            <td colspan="7" class="text-center" style="color: #64748b; padding: 12px;">No requests recorded for this item yet.</td>
+        </tr>
+    `
+
+    const printWindow = window.open('', '_blank', 'width=1100,height=850')
+    if (!printWindow) {
+        window.alert('Please allow pop-ups for this site to print the stock card.')
+        return
+    }
+
+    printWindow.document.open()
+    printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stock Card - ${escapePrintHtml(item.name)}</title>
+<style>
+@page { size: A4 landscape; margin: 8mm; }
+body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10px; margin: 0; background: #fff; }
+.card-container { width: 100%; border: 1.5px solid #000; box-sizing: border-box; }
+.header-table, .info-table, .data-table { width: 100%; border-collapse: collapse; }
+.header-table td, .info-table td, .data-table th, .data-table td { border: 1px solid #000; padding: 4px 6px; vertical-align: middle; }
+.logo-cell { width: 100px; text-align: center; background: #fff; }
+.logo-cell img { width: 55px; height: 55px; object-fit: contain; }
+.title-cell { text-align: center; font-size: 15px; font-weight: bold; background: #fff; letter-spacing: 0.5px; }
+.stock-card-title { text-align: center; font-size: 13px; font-weight: bold; background: #2563eb; color: #fff; text-transform: uppercase; padding: 4px; }
+.doc-info-cell { width: 220px; font-size: 9px; padding: 0 !important; }
+.doc-info-subtable { width: 100%; border-collapse: collapse; }
+.doc-info-subtable td { border-bottom: 1px solid #000; padding: 2px 4px; }
+.doc-info-subtable tr:last-child td { border-bottom: none; }
+.appendix { text-align: right; font-style: italic; font-size: 11px; font-weight: bold; padding: 4px 0; }
+.data-table th { background: #f8fafc; font-size: 9px; text-align: center; font-weight: bold; text-transform: uppercase; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.blue-text { color: #1d4ed8; font-weight: bold; }
+.green-text { color: #15803d; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="card-container">
+    <table class="header-table">
+        <tr>
+            <td class="logo-cell" rowspan="2">
+                <img src="${logo}" alt="Logo" />
+            </td>
+            <td class="title-cell">PROPERTY MANAGEMENT SECTION</td>
+            <td class="doc-info-cell" rowspan="2">
+                <table class="doc-info-subtable">
+                    <tr><td>Doc. Code : PMS-15</td></tr>
+                    <tr><td>Effectivity Date : August 9, 2022</td></tr>
+                    <tr><td>Revision No.: 0</td></tr>
+                    <tr><td>Page No. : 1</td></tr>
+                </table>
+            </td>
+        </tr>
+        <tr>
+            <td class="stock-card-title">STOCK CARD</td>
+        </tr>
+    </table>
+
+    <div class="appendix">Appendix 58</div>
+
+    <table class="info-table" style="border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;">
+        <tr>
+            <td style="width: 13%; font-weight: bold;">Entity Name:</td>
+            <td style="width: 65%;">Drug Treatment and Rehabilitation Center Caraga</td>
+            <td style="width: 10%; font-weight: bold;">Fund Cluster:</td>
+            <td style="width: 12%;"></td>
+        </tr>
+    </table>
+
+    <table class="info-table">
+        <tr>
+            <td style="width: 15%; font-weight: bold;">Item / Product Name:</td>
+            <td style="width: 60%;" class="blue-text">${escapePrintHtml(item.name)}</td>
+            <td style="width: 12%; font-weight: bold;">Stock No.:</td>
+            <td style="width: 13%; background: #fef08a;" class="blue-text text-center">${escapePrintHtml(item.propertyNo)}</td>
+        </tr>
+        <tr>
+            <td style="font-weight: bold;">Description / Location:</td>
+            <td class="green-text">${escapePrintHtml(item.name)} | Location: Warehouse</td>
+            <td style="font-weight: bold;">Re-order Point:</td>
+            <td class="text-center">${escapePrintHtml(item.reorderLevel)}</td>
+        </tr>
+        <tr>
+            <td style="font-weight: bold;">Unit of Measurement:</td>
+            <td class="green-text">${escapePrintHtml(item.unit)}</td>
+            <td style="font-weight: bold;">Opening Balance</td>
+            <td class="text-center font-weight-bold">0</td>
+        </tr>
+    </table>
+
+    <table class="data-table" style="margin-top: -1px;">
+        <thead>
+            <tr>
+                <th rowspan="2" style="width: 11%;">Date</th>
+                <th rowspan="2" style="width: 32%;">Reference No. / Source</th>
+                <th colspan="2" style="width: 22%;">Procured</th>
+                <th rowspan="2" style="width: 18%;">Section</th>
+                <th style="width: 9%;">Balance</th>
+                <th rowspan="2" style="width: 8%;">Transaction Type</th>
+            </tr>
+            <tr>
+                <th style="width: 11%;">Qty.</th>
+                <th style="width: 11%;">Qty.</th>
+                <th style="width: 9%;">Qty.</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${rows}
+        </tbody>
+    </table>
+</div>
+</body>
+</html>`)
+    printWindow.document.close()
+    printWindow.focus()
+    setTimeout(() => printWindow.print(), 300)
+}
 
 const requestForm = ref({
     requestorName: '',
@@ -303,55 +522,22 @@ function toApi(item) {
 |--------------------------------------------------------------------------
 | Historical Registration API Mapper
 |--------------------------------------------------------------------------
-|
-| IMPORTANT:
-|
-| registered_qty from the database becomes quantity ONLY inside
-| the history object.
-|
-| This is NOT the current inventory quantity.
-|
-|--------------------------------------------------------------------------
 */
 function fromHistoryApi(item) {
     return {
         id: item.id,
-
         propertyNo: item.property_no,
-
         iarNumber: item.iar_number || '',
-
         name: item.name,
-
         category: item.category,
-
         unit: item.unit,
-
-        /*
-        |--------------------------------------------------------------------------
-        | IMMUTABLE HISTORICAL QUANTITY
-        |--------------------------------------------------------------------------
-        */
         quantity: Number(item.registered_qty) || 0,
-
-        /*
-        |--------------------------------------------------------------------------
-        | Keep a separate explicit field too.
-        |--------------------------------------------------------------------------
-        */
         registeredQty: Number(item.registered_qty) || 0,
-
         reorderLevel: Number(item.reorder_level) || 1,
-
         unitCost: Number(item.unit_cost) || 0,
-
         image: item.image || DEFAULT_IMAGE,
-
-        registeredDate:
-            item.registered_date || null,
-
-        registeredAt:
-            item.registered_at || item.created_at || null,
+        registeredDate: item.registered_date || null,
+        registeredAt: item.registered_at || item.created_at || null,
     }
 }
 
@@ -380,11 +566,6 @@ async function loadInventory() {
 
         inventory.value = (data || []).map(fromApi)
 
-        /*
-        |--------------------------------------------------------------------------
-        | History is loaded independently from inventory.
-        |--------------------------------------------------------------------------
-        */
         await loadRegisteredItemsByDate(
             selectedRegistrationDate.value,
         )
@@ -404,23 +585,9 @@ async function loadInventory() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Load Registration History
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| Never use inventory.value here.
-|
-| History comes from the dedicated database table.
-|
-|--------------------------------------------------------------------------
-*/
 async function loadRegisteredItemsByDate(
     date = selectedRegistrationDate.value,
 ) {
-    // Pass null to load history across every registration date.
-    // A date string keeps the existing single-day view.
     if (date !== null && !date) {
         registeredItems.value = []
         return
@@ -520,11 +687,6 @@ const formattedRequestDate = computed(() => {
 /*
 |--------------------------------------------------------------------------
 | Inventory Request History
-|--------------------------------------------------------------------------
-|
-| Request history uses the same selected date as registration history.
-| This keeps the dashboard organized around one daily activity date.
-|
 |--------------------------------------------------------------------------
 */
 const requestItems = ref([])
@@ -626,9 +788,6 @@ async function printRequestHistory() {
     requestError.value = ''
 
     try {
-        // Printing is intentionally independent of the selected date.
-        // Fetch every request record from the server so the PDF/document
-        // contains the complete historical request list.
         const { data } = await axios.get(
             '/api/inventory/request-history',
         )
@@ -1027,7 +1186,6 @@ tr:nth-child(even) { background: #f8fafc; }
 }
 
 watch(selectedRegistrationDate, (newDate) => {
-    // While searching, keep all dates loaded; otherwise show the selected day.
     if (registrationSearch.value.trim()) {
         loadRegisteredItemsByDate(null)
     } else {
@@ -1037,8 +1195,6 @@ watch(selectedRegistrationDate, (newDate) => {
 
 watch(registrationSearch, (value) => {
     if (value.trim()) {
-        // Searching is global across all registration dates, not just the
-        // date currently selected in the calendar.
         loadRegisteredItemsByDate(null)
     } else {
         loadRegisteredItemsByDate(selectedRegistrationDate.value)
@@ -1173,15 +1329,6 @@ async function handleAddItem() {
 
         inventory.value.push(newItem)
 
-        /*
-        |--------------------------------------------------------------------------
-        | Reload history because the backend created a permanent
-        | historical snapshot at registration time.
-        |--------------------------------------------------------------------------
-        */
-        // Show the new registration immediately, even if the date picker
-        // was left on an older date. The history API must create a history
-        // row in the same transaction as the inventory row.
         selectedRegistrationDate.value = getLocalDateString()
         await loadRegisteredItemsByDate(null)
 
@@ -1206,17 +1353,6 @@ async function handleAddItem() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Persist Current Inventory
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| This only updates the current inventory table.
-| It never changes registration history.
-|
-|--------------------------------------------------------------------------
-*/
 async function persistItem(item) {
     const { data } = await axios.put(
         `/api/inventory/${item.id}`,
@@ -1236,16 +1372,6 @@ async function persistItem(item) {
     return mapped
 }
 
-/*
-|--------------------------------------------------------------------------
-| Quick Quantity Adjustment
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| No history update is performed here.
-|
-|--------------------------------------------------------------------------
-*/
 async function quickAdjustQty(id, change) {
     const item = inventory.value.find(
         (item) => item.id === id,
@@ -1292,11 +1418,6 @@ async function quickAdjustQty(id, change) {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Inventory Request
-|--------------------------------------------------------------------------
-*/
 function openRequestModal(id) {
     const item = inventory.value.find((row) => row.id === id)
 
@@ -1435,11 +1556,6 @@ async function submitInventoryRequest() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Update Quantity Modal
-|--------------------------------------------------------------------------
-*/
 function openUpdateQtyModal(id) {
     const item = inventory.value.find(
         (item) => item.id === id,
@@ -1499,17 +1615,6 @@ async function saveQtyUpdate() {
 
         closeUpdateQtyModal()
 
-        /*
-        |--------------------------------------------------------------------------
-        | IMPORTANT:
-        |
-        | Do NOT reload registration history from inventory.
-        |
-        | The history endpoint reads registered_qty from the
-        | immutable history table, so the original quantity remains.
-        |--------------------------------------------------------------------------
-        */
-
         if (
             previousQty === 0 &&
             saved.quantity > 0
@@ -1550,11 +1655,6 @@ async function saveQtyUpdate() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Edit Item Modal
-|--------------------------------------------------------------------------
-*/
 function openEditItemModal(id) {
     const item = inventory.value.find(
         (item) => item.id === id,
@@ -1637,16 +1737,6 @@ async function handleSaveEditItem() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Delete Current Item
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| The inventory can be deleted while its registration history remains.
-|
-|--------------------------------------------------------------------------
-*/
 async function deleteCurrentItem() {
     const id = activeEditingId.value
 
@@ -1669,13 +1759,6 @@ async function deleteCurrentItem() {
             (row) => row.id !== id,
         )
 
-        /*
-        |--------------------------------------------------------------------------
-        | Reload history from database.
-        |
-        | It should still exist even after inventory deletion.
-        |--------------------------------------------------------------------------
-        */
         await loadRegisteredItemsByDate(
             selectedRegistrationDate.value,
         )
@@ -1701,11 +1784,6 @@ async function deleteCurrentItem() {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Image Error
-|--------------------------------------------------------------------------
-*/
 function handleImageError(event) {
     event.target.src = DEFAULT_IMAGE
 }
@@ -1753,7 +1831,7 @@ function handleImageError(event) {
                             <h1
                                 class="text-lg sm:text-2xl font-black tracking-tight text-white mt-0.5"
                             >
-                                Material Management Office
+                                Material Management Section
                             </h1>
 
                             <p class="text-xs text-purple-200 hidden sm:block">
@@ -1772,6 +1850,13 @@ function handleImageError(event) {
                                 Add New Item
                             </span>
                         </button>
+                        <button
+                            type="button"
+                            @click="logout"
+                            class="rounded-lg bg-purple-700 px-4 py-2 font-semibold text-white hover:bg-purple-800"
+                        >
+                            Logout
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1779,6 +1864,7 @@ function handleImageError(event) {
             <div
                 class="h-1 bg-gradient-to-r from-purple-400 via-purple-300 to-purple-600"
             ></div>
+            
         </header>
 
         <!-- =========================================================
@@ -2070,8 +2156,10 @@ function handleImageError(event) {
                                     <img
                                         :src="itemImage(item)"
                                         @error="handleImageError"
-                                        class="w-12 h-12 object-cover rounded-xl border border-slate-200 mx-auto shadow-sm bg-white"
+                                        @click="openItemRequestsModal(item)"
+                                        class="w-12 h-12 object-cover rounded-xl border border-slate-200 mx-auto shadow-sm bg-white cursor-pointer hover:opacity-85 transition-opacity"
                                         alt="Thumbnail"
+                                        title="I-click para makita ang mga nag-request"
                                     />
                                 </td>
 
@@ -2083,7 +2171,9 @@ function handleImageError(event) {
 
                                 <td class="py-3 px-4">
                                     <div
-                                        class="font-bold text-slate-800 text-sm"
+                                        @click="openItemRequestsModal(item)"
+                                        class="font-bold text-slate-800 text-sm cursor-pointer hover:text-purple-700 transition-colors inline-block"
+                                        title="I-click para makita ang mga nag-request"
                                     >
                                         {{ item.name }}
                                     </div>
@@ -2201,12 +2291,14 @@ function handleImageError(event) {
                     >
                         <div>
                             <div
-                                class="relative h-36 rounded-xl overflow-hidden bg-slate-100 border border-slate-200/60 mb-3"
+                                @click="openItemRequestsModal(item)"
+                                class="relative h-36 rounded-xl overflow-hidden bg-slate-100 border border-slate-200/60 mb-3 cursor-pointer group"
+                                title="I-click para makita ang mga nag-request"
                             >
                                 <img
                                     :src="itemImage(item)"
                                     @error="handleImageError"
-                                    class="w-full h-full object-cover"
+                                    class="w-full h-full object-cover group-hover:scale-105 transition-transform"
                                     alt="Card Image"
                                 />
 
@@ -2248,7 +2340,9 @@ function handleImageError(event) {
                             </div>
 
                             <h4
-                                class="font-bold text-slate-800 text-base mt-0.5"
+                                @click="openItemRequestsModal(item)"
+                                class="font-bold text-slate-800 text-base mt-0.5 cursor-pointer hover:text-purple-700 transition-colors"
+                                title="I-click para makita ang mga nag-request"
                             >
                                 {{ item.name }}
                             </h4>
@@ -2407,8 +2501,10 @@ function handleImageError(event) {
                                     <img
                                         :src="itemImage(item)"
                                         @error="handleImageError"
-                                        class="w-12 h-12 object-cover rounded-xl border border-rose-200 mx-auto shadow-sm bg-white opacity-80"
+                                        @click="openItemRequestsModal(item)"
+                                        class="w-12 h-12 object-cover rounded-xl border border-rose-200 mx-auto shadow-sm bg-white opacity-90 cursor-pointer hover:opacity-100 transition-opacity"
                                         alt="Out of Stock Thumbnail"
+                                        title="I-click para makita ang mga nag-request"
                                     />
                                 </td>
 
@@ -2419,7 +2515,11 @@ function handleImageError(event) {
                                 </td>
 
                                 <td class="py-3 px-4">
-                                    <div class="font-bold text-slate-800 text-sm">
+                                    <div 
+                                        @click="openItemRequestsModal(item)"
+                                        class="font-bold text-slate-800 text-sm cursor-pointer hover:text-rose-700 transition-colors inline-block"
+                                        title="I-click para makita ang mga nag-request"
+                                    >
                                         {{ item.name }}
                                     </div>
                                     <p class="text-xs text-purple-700 font-semibold mt-1">
@@ -3302,7 +3402,7 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-<div
+                    <div
                         class="pt-4 flex justify-end space-x-3 border-t border-slate-100"
                     >
                         <button
@@ -3924,7 +4024,7 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-<div
+                    <div
                         class="pt-4 flex justify-between items-center border-t border-slate-100"
                     >
                         <button
@@ -3957,6 +4057,132 @@ function handleImageError(event) {
                         </div>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- =========================================================
+             ITEM REQUEST HISTORY DETAILS MODAL (MAY PRINT STOCK CARD BUTTON NA)
+        ========================================================== -->
+        <div
+            v-if="showItemRequestsModal && selectedItemForRequests"
+            class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            @click.self="closeItemRequestsModal"
+        >
+            <div
+                class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-2xl w-full overflow-hidden max-h-[90vh] flex flex-col"
+            >
+                <!-- Modal Header -->
+                <div
+                    class="bg-gradient-to-r from-purple-900 to-purple-800 px-6 py-4 text-white flex justify-between items-center"
+                >
+                    <div class="flex items-center space-x-3">
+                        <img
+                            :src="itemImage(selectedItemForRequests)"
+                            @error="handleImageError"
+                            class="w-10 h-10 object-cover rounded-xl border border-purple-300 bg-white"
+                        />
+                        <div>
+                            <h3 class="font-bold text-base sm:text-lg text-white">
+                                {{ selectedItemForRequests.name }}
+                            </h3>
+                            <p class="text-[11px] text-purple-200">
+                                Listahan ng lahat ng nag-request sa item na ito
+                            </p>
+                        </div>
+                    </div>
+
+                    <button
+                        @click="closeItemRequestsModal"
+                        class="text-purple-200 hover:text-white bg-purple-800/50 hover:bg-purple-700 p-2 rounded-xl transition-colors"
+                    >
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+
+                <!-- Modal Body -->
+                <div class="p-6 space-y-4 overflow-y-auto flex-1">
+                    <!-- Item Info Card -->
+                    <div class="bg-purple-50 p-4 rounded-2xl border border-purple-100 flex items-center justify-between">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase text-purple-600 tracking-wider">Property Number</span>
+                            <p class="font-mono font-black text-slate-800 text-sm">{{ selectedItemForRequests.propertyNo }}</p>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-[10px] font-bold uppercase text-purple-600 tracking-wider">Kasalukuyang Balance</span>
+                            <p class="font-black text-emerald-700 text-lg">
+                                {{ selectedItemForRequests.quantity }} {{ selectedItemForRequests.unit }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Requests Table -->
+                    <div v-if="itemRequestsList.length > 0" class="border border-slate-200 rounded-xl overflow-hidden">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-100 text-[11px] font-extrabold text-slate-600 uppercase">
+                                    <th class="py-2.5 px-3">Date</th>
+                                    <th class="py-2.5 px-3">Pangalan ng Nag-request / Office</th>
+                                    <th class="py-2.5 px-3">Property No.</th>
+                                    <th class="py-2.5 px-3 text-center">Qty Requested</th>
+                                    <th class="py-2.5 px-3 text-center">Remaining Balance</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 text-xs">
+                                <tr
+                                    v-for="req in itemRequestsList"
+                                    :key="req.id"
+                                    class="hover:bg-slate-50 transition-colors"
+                                >
+                                    <td class="py-3 px-3 font-semibold text-slate-700">
+                                        {{ req.requestDate || '-' }}
+                                    </td>
+                                    <td class="py-3 px-3">
+                                        <div class="font-bold text-slate-800">{{ req.requestorName }}</div>
+                                        <div class="text-[10px] text-slate-500">{{ req.departmentOffice }}</div>
+                                    </td>
+                                    <td class="py-3 px-3 font-mono font-bold text-purple-900">
+                                        {{ req.propertyNo || selectedItemForRequests.propertyNo }}
+                                    </td>
+                                    <td class="py-3 px-3 text-center">
+                                        <span class="inline-block bg-rose-100 text-rose-800 font-black px-2 py-0.5 rounded-md">
+                                            {{ req.requestedQuantity }} {{ selectedItemForRequests.unit }}
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-3 text-center font-bold text-slate-800">
+                                        {{ selectedItemForRequests.quantity }} {{ selectedItemForRequests.unit }}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Empty State -->
+                    <div v-else class="text-center py-8 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                        <i class="fa-solid fa-clipboard-question text-3xl text-slate-300 mb-2"></i>
+                        <p class="text-sm font-bold text-slate-600">Walang naitatalang request</p>
+                        <p class="text-xs text-slate-400">Wala pang nagre-request para sa item na ito sa buong kasaysayan.</p>
+                    </div>
+                </div>
+
+                <!-- Modal Footer with Print Stock Card Button -->
+                <div class="p-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
+                    <button
+                        type="button"
+                        @click="printItemStockCard"
+                        class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center space-x-1.5 shadow-sm"
+                    >
+                        <i class="fa-solid fa-print"></i>
+                        <span>Print Stock Card (PDF)</span>
+                    </button>
+
+                    <button
+                        type="button"
+                        @click="closeItemRequestsModal"
+                        class="px-5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold transition-colors"
+                    >
+                        Isara
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -4048,4 +4274,4 @@ function handleImageError(event) {
 :global(body) {
     font-family: 'Inter', sans-serif;
 }
-</style> 
+</style>

@@ -1,7 +1,7 @@
+
 import './bootstrap';
 
 import { createApp } from 'vue';
+import App from './App.vue';
 
-import Dashboard from './components/dashboard.vue';
-
-createApp(Dashboard).mount('#app');
+createApp(App).mount('#app');
