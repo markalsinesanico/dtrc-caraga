@@ -1,8 +1,35 @@
+Dashboard.vue
+Dashboard.vue
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import InventoryRegistrationHistory from './InventoryRegistrationHistory.vue'
+import InventoryRequestHistory from './InventoryRequestHistory.vue'
+import ItemRequestRanking from './ItemRequestRanking.vue'
 import axios from 'axios'
 import logo from '../assets/logo.jpg'
+
+const activePage = ref('dashboard')
+
+function navigateTo(page) {
+    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking']
+    if (!allowedPages.includes(page)) return
+    activePage.value = page
+    const nextHash = `#${page}`
+    if (window.location.hash !== nextHash) window.location.hash = nextHash
+}
+
+function syncPageFromHash() {
+    const page = window.location.hash.replace(/^#/, '')
+    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking']
+    activePage.value = allowedPages.includes(page) ? page : 'dashboard'
+}
+
+onMounted(() => {
+    syncPageFromHash()
+    window.addEventListener('hashchange', syncPageFromHash)
+})
+onBeforeUnmount(() => window.removeEventListener('hashchange', syncPageFromHash))
 
 /*
 |--------------------------------------------------------------------------
@@ -77,6 +104,32 @@ const departments = [
 */
 const inventory = ref([])
 const isSaving = ref(false)
+
+// Items selected for printing multiple Stock Cards in one PDF.
+const selectedStockCardIds = ref([])
+
+const selectedStockCardItems = computed(() =>
+    selectedStockCardIds.value
+        .map((id) => inventory.value.find((item) => String(item.id) === String(id)))
+        .filter(Boolean),
+)
+
+function toggleStockCardSelection(item, checked) {
+    const id = String(item.id)
+    if (checked) {
+        if (!selectedStockCardIds.value.some((selectedId) => String(selectedId) === id)) {
+            selectedStockCardIds.value.push(item.id)
+        }
+    } else {
+        selectedStockCardIds.value = selectedStockCardIds.value.filter(
+            (selectedId) => String(selectedId) !== id,
+        )
+    }
+}
+
+function clearStockCardSelection() {
+    selectedStockCardIds.value = []
+}
 
 // Track kung aling description ang nakabukas
 const expandedDescriptions = ref({})
@@ -364,15 +417,206 @@ body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10px; 
     setTimeout(() => printWindow.print(), 300)
 }
 
+/*
+|--------------------------------------------------------------------------
+| Print Multiple Stock Cards
+| Each selected item gets its own A4 portrait page in the same print/PDF job.
+|--------------------------------------------------------------------------
+*/
+async function printSelectedStockCards() {
+    const items = selectedStockCardItems.value
+    if (items.length < 2) {
+        window.alert('Please select at least two items to print multiple Stock Cards.')
+        return
+    }
+
+    let allRequests = []
+    try {
+        const { data } = await axios.get('/api/inventory/request-history')
+        allRequests = (data || []).map(fromRequestApi)
+    } catch (error) {
+        console.error('Could not load request history for Stock Cards:', error)
+        window.alert(apiErrorMessage(error, 'Unable to load request history for the selected Stock Cards.'))
+        return
+    }
+
+    const printWindow = window.open('', '_blank', 'width=1100,height=850')
+    if (!printWindow) {
+        window.alert('Please allow pop-ups for this site to print the selected Stock Cards.')
+        return
+    }
+
+    const pages = items.map((item) => {
+        const requests = allRequests.filter((req) =>
+            String(req.inventoryId) === String(item.id) ||
+            String(req.propertyNo || '').trim().toLowerCase() === String(item.propertyNo || '').trim().toLowerCase() ||
+            String(req.itemName || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase()
+        )
+
+        const rows = requests.length
+            ? requests.map((req) => {
+                const qty = Number(req.requestedQuantity || 0).toFixed(2)
+                return `
+                    <tr>
+                        <td>${escapePrintHtml(req.requestDate || '-')}</td>
+                        <td>${escapePrintHtml(req.referenceNoSource || '-')}</td>
+                        <td class="center">${escapePrintHtml(qty)}</td>
+                        <td class="center">${escapePrintHtml(qty)}</td>
+                        <td>${escapePrintHtml(req.departmentOffice || '-')}</td>
+                        <td class="center">${escapePrintHtml(Number(item.quantity || 0).toFixed(2))}</td>
+                        <td class="center">Procured</td>
+                    </tr>`
+            }).join('')
+            : `<tr><td colspan="7" class="center no-records">No requests recorded for this item yet.</td></tr>`
+
+        return `
+        <section class="card-page">
+            <table class="header-table">
+                <tr>
+                    <td class="logo-cell" rowspan="2"><img src="${logo}" alt="Logo"></td>
+                    <td class="title-cell">PROPERTY MANAGEMENT SECTION</td>
+                    <td class="doc-info-cell" rowspan="2">
+                        <table class="doc-info-subtable">
+                            <tr><td>Doc. Code : PMS-15</td></tr>
+                            <tr><td>Effectivity Date : August 9, 2022</td></tr>
+                            <tr><td>Revision No.: 0</td></tr>
+                            <tr><td>Page No. : 1</td></tr>
+                        </table>
+                    </td>
+                </tr>
+                <tr><td class="stock-card-title">STOCK CARD</td></tr>
+            </table>
+            <div class="appendix">Appendix 58</div>
+            <table class="info-table">
+                <tr>
+                    <td class="label">Entity Name:</td><td colspan="1">Drug Treatment and Rehabilitation Center Caraga</td>
+                    <td class="label">Fund Cluster:</td><td></td>
+                </tr>
+            </table>
+            <table class="info-table">
+                <tr>
+                    <td class="label">Item / Product Name:</td><td class="blue">${escapePrintHtml(item.name)}</td>
+                    <td class="label">Stock No.:</td><td class="yellow center">${escapePrintHtml(item.propertyNo)}</td>
+                </tr>
+                <tr>
+                    <td class="label">Description / Location:</td><td class="green">${escapePrintHtml(item.description || item.name)} | Location: Warehouse</td>
+                    <td class="label">Re-order Point:</td><td class="center">${escapePrintHtml(item.reorderLevel ?? 1)}</td>
+                </tr>
+                <tr>
+                    <td class="label">Unit of Measurement:</td><td class="green">${escapePrintHtml(item.unit || '-')}</td>
+                    <td class="label">Opening Balance</td><td class="center"><strong>0</strong></td>
+                </tr>
+            </table>
+            <table class="data-table">
+                <thead>
+                    <tr><th rowspan="2">Date</th><th rowspan="2">Reference No. / Source</th><th colspan="2">Procured</th><th rowspan="2">Section</th><th>Balance</th><th rowspan="2">Transaction Type</th></tr>
+                    <tr><th>Qty.</th><th>Qty.</th><th>Qty.</th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </section>`
+    }).join('')
+
+    printWindow.document.open()
+    printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Selected Inventory Stock Cards</title>
+<style>
+    /* A4 portrait bond paper: 210mm x 297mm */
+    @page { size: A4 portrait; margin: 8mm; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 9px; }
+    @media print {
+        html, body { width: auto; height: auto; }
+        .card-page { width: 100%; }
+    }
+    .card-page { width: 100%; border: 1.5px solid #000; page-break-after: always; break-after: page; }
+    .card-page:last-child { page-break-after: auto; break-after: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    .header-table td, .info-table td, .data-table th, .data-table td { border: 1px solid #000; padding: 4px 6px; vertical-align: middle; }
+    .logo-cell { width: 100px; text-align: center; }
+    .logo-cell img { width: 55px; height: 55px; object-fit: contain; }
+    .title-cell { text-align: center; font-size: 15px; font-weight: bold; letter-spacing: .5px; }
+    .stock-card-title { text-align: center; font-size: 13px; font-weight: bold; background: #2563eb; color: #000; }
+    .doc-info-cell { width: 220px; font-size: 9px; padding: 0 !important; }
+    .doc-info-subtable td { padding: 2px 4px; border-bottom: 1px solid #000; }
+    .doc-info-subtable tr:last-child td { border-bottom: none; }
+    .appendix { text-align: right; font-style: italic; font-size: 11px; font-weight: bold; padding: 4px 0; }
+    .label { width: 15%; font-weight: bold; }
+    .blue { color: #1d4ed8; font-weight: bold; }
+    .green { color: #15803d; font-weight: bold; }
+    .yellow { background: #fef08a; color: #1d4ed8; font-weight: bold; }
+    .data-table { margin-top: -1px; }
+    .data-table th { background: #f8fafc; font-size: 9px; text-align: center; text-transform: uppercase; }
+    .center { text-align: center; }
+    .no-records { color: #64748b; padding: 12px; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style>
+</head>
+<body>${pages}</body>
+</html>`)
+    printWindow.document.close()
+    printWindow.focus()
+    setTimeout(() => printWindow.print(), 400)
+}
+
 const requestForm = ref({
     requestorName: '',
     departmentOffice: '',
     referenceNoSource: '',
-    itemId: null,
-    itemName: '',
-    quantity: 1,
+    items: [],
     requestDate: getLocalDateString(),
 })
+
+// Item to add into the current multi-item request form.
+const selectedRequestItemId = ref('')
+
+const requestableItems = computed(() =>
+    inventory.value.filter((item) => Number(item.quantity) > 0)
+)
+
+const selectedRequestItem = computed(() =>
+    inventory.value.find((item) => String(item.id) === String(selectedRequestItemId.value)) || null
+)
+
+function addRequestItem() {
+    const item = selectedRequestItem.value
+
+    if (!item) {
+        showToast('Select an Item', 'Please choose an item to add to this request.', 'warning')
+        return
+    }
+
+    if (Number(item.quantity) < 1) {
+        showToast('Out of Stock', `"${item.name}" is currently out of stock.`, 'danger')
+        return
+    }
+
+    const alreadyAdded = requestForm.value.items.some(
+        (row) => String(row.itemId) === String(item.id),
+    )
+
+    if (alreadyAdded) {
+        showToast('Item Already Added', `"${item.name}" is already in the request list. Change its quantity in the list below.`, 'warning')
+        return
+    }
+
+    requestForm.value.items.push({
+        itemId: item.id,
+        itemName: item.name,
+        propertyNo: item.propertyNo,
+        unit: item.unit,
+        quantity: 1,
+    })
+
+    selectedRequestItemId.value = ''
+}
+
+function removeRequestItem(index) {
+    requestForm.value.items.splice(index, 1)
+}
 
 const activeEditingId = ref(null)
 const currentModalImageData = ref('')
@@ -1503,135 +1747,125 @@ function openRequestModal(id) {
     const item = inventory.value.find((row) => row.id === id)
 
     if (!item) return
+    if (Number(item.quantity) < 1) {
+        showToast('Out of Stock', `"${item.name}" is currently out of stock.`, 'warning')
+        return
+    }
 
     requestForm.value = {
         requestorName: '',
         departmentOffice: '',
         referenceNoSource: '',
-        itemId: item.id,
-        itemName: item.name,
-        quantity: 1,
+        items: [{
+            itemId: item.id,
+            itemName: item.name,
+            propertyNo: item.propertyNo,
+            unit: item.unit,
+            quantity: 1,
+        }],
         requestDate: getLocalDateString(),
     }
-
+    selectedRequestItemId.value = ''
     showRequestModal.value = true
 }
 
 function closeRequestModal() {
+    if (isSubmittingRequest.value) return
     showRequestModal.value = false
 }
 
 async function submitInventoryRequest() {
     if (isSubmittingRequest.value) return
 
-    const quantity = Number(requestForm.value.quantity)
+    const requestorName = requestForm.value.requestorName.trim()
+    const departmentOffice = requestForm.value.departmentOffice
+    const referenceNoSource = requestForm.value.referenceNoSource.trim() || null
+    const requestDate = requestForm.value.requestDate
+    const requestedItems = requestForm.value.items.map((row) => ({
+        ...row,
+        quantity: Number(row.quantity),
+    }))
 
-    if (!requestForm.value.requestorName.trim()) {
-        showToast(
-            'Requestor Required',
-            'Please enter the requestor/name.',
-            'danger',
-        )
+    if (!requestorName) {
+        showToast('Requestor Required', 'Please enter the requestor/name.', 'danger')
+        return
+    }
+    if (!departmentOffice) {
+        showToast('Department Required', 'Please select the department/office.', 'danger')
+        return
+    }
+    if (!requestDate) {
+        showToast('Date Required', 'Please select the request date.', 'danger')
+        return
+    }
+    if (!requestedItems.length) {
+        showToast('No Items Selected', 'Add at least one inventory item to the request.', 'danger')
         return
     }
 
-    if (!requestForm.value.departmentOffice) {
-        showToast(
-            'Department Required',
-            'Please select the department/office.',
-            'danger',
-        )
-        return
-    }
+    // Validate every item and quantity before sending any request.
+    for (const requested of requestedItems) {
+        const item = inventory.value.find((row) => String(row.id) === String(requested.itemId))
 
-    if (!requestForm.value.requestDate) {
-        showToast(
-            'Date Required',
-            'Please select the request date.',
-            'danger',
-        )
-        return
-    }
-
-    if (!Number.isInteger(quantity) || quantity < 1) {
-        showToast(
-            'Invalid Quantity',
-            'Requested quantity must be a whole number greater than zero.',
-            'danger',
-        )
-        return
-    }
-
-    const item = inventory.value.find(
-        (row) => row.id === requestForm.value.itemId,
-    )
-
-    if (!item) {
-        showToast(
-            'Item Not Found',
-            'The selected inventory item is no longer available.',
-            'danger',
-        )
-        return
-    }
-
-    if (quantity > item.quantity) {
-        showToast(
-            'Insufficient Stock',
-            `Only ${item.quantity} ${item.unit}${item.quantity === 1 ? '' : 's'} of "${item.name}" are available.`,
-            'danger',
-        )
-        return
+        if (!item) {
+            showToast('Item Not Found', 'One of the selected items no longer exists in inventory. Please reopen the form.', 'danger')
+            return
+        }
+        if (!Number.isInteger(requested.quantity) || requested.quantity < 1) {
+            showToast('Invalid Quantity', `Enter a whole quantity greater than zero for "${item.name}".`, 'danger')
+            return
+        }
+        if (requested.quantity > Number(item.quantity)) {
+            showToast('Insufficient Stock', `Only ${item.quantity} ${item.unit}${item.quantity === 1 ? '' : 's'} of "${item.name}" are available.`, 'danger')
+            return
+        }
     }
 
     isSubmittingRequest.value = true
+    let savedCount = 0
 
     try {
-        const { data } = await axios.post(
-            '/api/inventory/requests',
-            {
-                requestor_name:
-                    requestForm.value.requestorName.trim(),
-                department_office:
-                    requestForm.value.departmentOffice,
-                reference_no_source:
-                    requestForm.value.referenceNoSource.trim() || null,
+        // Keep one database request row per item. This preserves the existing
+        // item-specific request history and requestor-name filtering.
+        for (const requested of requestedItems) {
+            const item = inventory.value.find((row) => String(row.id) === String(requested.itemId))
+            const { data } = await axios.post('/api/inventory/requests', {
+                requestor_name: requestorName,
+                department_office: departmentOffice,
+                reference_no_source: referenceNoSource,
                 inventory_id: item.id,
-                quantity,
-                request_date:
-                    requestForm.value.requestDate,
-            },
-        )
+                quantity: requested.quantity,
+                request_date: requestDate,
+            })
 
-        const updatedInventory = fromApi(data.data.inventory)
-        const index = inventory.value.findIndex(
-            (row) => row.id === updatedInventory.id,
-        )
-
-        if (index !== -1) {
-            inventory.value[index] = updatedInventory
+            const updatedInventory = fromApi(data.data.inventory)
+            const index = inventory.value.findIndex((row) => String(row.id) === String(updatedInventory.id))
+            if (index !== -1) inventory.value[index] = updatedInventory
+            savedCount += 1
         }
 
-        await loadRequestItemsByDate(
-            selectedRequestDate.value,
-        )
-
-        closeRequestModal()
+        await loadRequestItemsByDate(selectedRequestDate.value)
+        showRequestModal.value = false
+        requestForm.value.items = []
 
         showToast(
             'Request Recorded',
-            `Recorded ${quantity} ${item.unit}${quantity === 1 ? '' : 's'} of "${item.name}" for ${requestForm.value.departmentOffice}. Available stock is now ${updatedInventory.quantity}.`,
+            `Successfully recorded ${savedCount} item${savedCount === 1 ? '' : 's'} for ${departmentOffice}. Each item has its own request history under ${requestorName}.`,
             'success',
         )
     } catch (error) {
-        showToast(
-            'Request Failed',
-            apiErrorMessage(
-                error,
-                'Could not record the inventory request.',
-            ),
-            'danger',
-        )
+        await loadInventory()
+        await loadRequestItemsByDate(selectedRequestDate.value)
+
+        if (savedCount > 0) {
+            showToast(
+                'Partially Recorded',
+                `${savedCount} item(s) were saved before an error occurred. Check Inventory Request History before retrying to avoid duplicate requests. ${apiErrorMessage(error, 'Please check the remaining items.')}`,
+                'danger',
+            )
+        } else {
+            showToast('Request Failed', apiErrorMessage(error, 'Could not record the inventory request.'), 'danger')
+        }
     } finally {
         isSubmittingRequest.value = false
     }
@@ -1870,22 +2104,133 @@ async function deleteCurrentItem() {
 function handleImageError(event) {
     event.target.src = DEFAULT_IMAGE
 }
+
+
+// Shared state/functions for the two separate history components.
+const pageState = reactive({
+    navigateTo,
+    activePage,
+    DEFAULT_IMAGE,
+    categories,
+    units,
+    departments,
+    inventory,
+    isSaving,
+    expandedDescriptions,
+    descriptionKey,
+    toggleDescription,
+    isDescriptionExpanded,
+    logout,
+    getLocalDateString,
+    selectedRegistrationDate,
+    selectedRequestDate,
+    registeredItems,
+    registrationSearch,
+    registrationLoading,
+    registrationError,
+    search,
+    categoryFilter,
+    viewMode,
+    showAddModal,
+    showUpdateModal,
+    showEditModal,
+    showRequestModal,
+    isSubmittingRequest,
+    showItemRequestsModal,
+    selectedItemForRequests,
+    allItemRequests,
+    openItemRequestsModal,
+    closeItemRequestsModal,
+    itemRequestsList,
+    printItemStockCard,
+    requestForm,
+    selectedRequestItemId,
+    requestableItems,
+    selectedRequestItem,
+    addRequestItem,
+    removeRequestItem,
+    activeEditingId,
+    currentModalImageData,
+    addForm,
+    editForm,
+    updateQuantity,
+    toasts,
+    toastId,
+    showToast,
+    removeToast,
+    sortedInventory,
+    filteredInventory,
+    availableItems,
+    outOfStockItems,
+    totalItems,
+    lowStockCount,
+    outOfStockCount,
+    availableCount,
+    itemImage,
+    printAvailableInventory,
+    fromApi,
+    toApi,
+    fromHistoryApi,
+    apiErrorMessage,
+    loadInventory,
+    loadRegisteredItemsByDate,
+    formattedRegistrationDate,
+    filteredRegisteredItems,
+    registrationCount,
+    formattedRequestDate,
+    requestItems,
+    requestLoading,
+    requestError,
+    fromRequestApi,
+    loadRequestItemsByDate,
+    requestCount,
+    formatRequestTime,
+    escapePrintHtml,
+    printRequestHistory,
+    csvCell,
+    fetchAllRegistrationHistory,
+    exportRegistrationHistoryToExcel,
+    printRegistrationHistory,
+    isLowStock,
+    toggleViewMode,
+    handleImageFileUpload,
+    handleImageUrlInput,
+    openAddItemModal,
+    closeAddItemModal,
+    handleAddItem,
+    persistItem,
+    quickAdjustQty,
+    openRequestModal,
+    closeRequestModal,
+    submitInventoryRequest,
+    openUpdateQtyModal,
+    closeUpdateQtyModal,
+    adjustModalQty,
+    activeUpdateItem,
+    saveQtyUpdate,
+    openEditItemModal,
+    closeEditItemModal,
+    handleSaveEditItem,
+    deleteCurrentItem,
+    handleImageError,
+})
+
 </script>
 
 <template>
-    <div class="min-h-screen bg-slate-50 font-sans text-slate-800 antialiased flex flex-col">
+    <div class="h-screen overflow-hidden bg-slate-50 font-sans text-slate-800 antialiased flex flex-col">
 
         <!-- =========================================================
              HEADER
         ========================================================== -->
         <header
-            class="text-white shadow-xl sticky top-0 z-30 border-b border-purple-800"
+            class="text-white shadow-xl shrink-0 z-30 border-b border-purple-800"
             style="
                 background: rgba(76, 29, 149, 0.95);
                 backdrop-filter: blur(8px);
             "
         >
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="w-full px-4 sm:px-6 lg:px-8">
                 <div class="flex items-center justify-between h-20">
 
                     <div class="flex items-center space-x-4">
@@ -1923,168 +2268,45 @@ function handleImageError(event) {
                         </div>
                     </div>
 
-                    <div class="flex items-center space-x-3">
-                        <button
-                            @click="openAddItemModal"
-                            class="bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 text-white font-semibold px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center space-x-2 shadow-lg shadow-purple-900/30 hover:scale-[1.02] focus:ring-2 focus:ring-purple-300 active:scale-95"
-                        >
-                            <i class="fa-solid fa-plus-circle text-lg"></i>
-                            <span class="hidden sm:inline">
-                                Add New Item
-                            </span>
-                        </button>
-                        <button
-                            type="button"
-                            @click="logout"
-                            class="rounded-lg bg-purple-700 px-4 py-2 font-semibold text-white hover:bg-purple-800"
-                        >
-                            Logout
-                        </button>
-                    </div>
+
                 </div>
             </div>
 
             <div
                 class="h-1 bg-gradient-to-r from-purple-400 via-purple-300 to-purple-600"
             ></div>
-            
+            <div class="md:hidden bg-purple-950 px-3 py-2 flex gap-2 overflow-x-auto">
+                <button type="button" @click="navigateTo('dashboard')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'dashboard' ? 'bg-purple-700' : 'bg-purple-900'">Dashboard</button>
+                <button type="button" @click="navigateTo('registration-history')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'registration-history' ? 'bg-purple-700' : 'bg-purple-900'">Registration History</button>
+                <button type="button" @click="navigateTo('request-history')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'request-history' ? 'bg-purple-700' : 'bg-purple-900'">Request History</button>
+                <button type="button" @click="navigateTo('item-request-ranking')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'item-request-ranking' ? 'bg-purple-700' : 'bg-purple-900'">Item Request Ranking</button>
+                <button type="button" @click="logout" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800"><i class="fa-solid fa-right-from-bracket mr-1"></i>Logout</button>
+            </div>
         </header>
 
         <!-- =========================================================
              MAIN
         ========================================================== -->
-        <main
-            class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-8"
-        >
-
-            <!-- =====================================================
-                 STATISTICS
-            ====================================================== -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-
-                <!-- TOTAL ITEMS -->
-                <div
-                    class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
-                >
-                    <div
-                        class="absolute top-0 right-0 w-24 h-24 -mr-6 -mt-6 bg-purple-100/50 rounded-full group-hover:scale-110 transition-transform pointer-events-none"
-                    ></div>
-
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Total Unique Items
-                            </p>
-
-                            <h3
-                                class="text-3xl font-black text-slate-800 mt-1"
-                            >
-                                {{ totalItems }}
-                            </h3>
-
-                            <p
-                                class="text-xs text-slate-400 mt-1 flex items-center"
-                            >
-                                <i
-                                    class="fa-solid fa-database text-[10px] mr-1 text-purple-500"
-                                ></i>
-                                Registered in catalog
-                            </p>
-                        </div>
-
-                        <div
-                            class="w-12 h-12 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center text-xl font-bold border border-purple-200/60 shadow-inner"
-                        >
-                            <i class="fa-solid fa-boxes-stacked"></i>
-                        </div>
-                    </div>
+        <div class="flex flex-1 min-w-0 min-h-0 overflow-hidden">
+            <aside class="w-64 h-full shrink-0 bg-white border-r border-slate-200 shadow-sm hidden md:flex md:flex-col">
+                <div class="px-5 py-6 border-b border-slate-100 flex items-center gap-3">
+                    <img :src="logo" alt="DTRC Caraga Logo" class="w-12 h-12 rounded-full object-cover border border-purple-200" />
+                    <div class="min-w-0"><p class="font-black text-sm text-purple-900">DTRC-Caraga</p><p class="text-xs text-slate-500">Inventory System</p></div>
                 </div>
-
-                <!-- LOW STOCK -->
-                <div
-                    class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
-                >
-                    <div
-                        class="absolute top-0 right-0 w-24 h-24 -mr-6 -mt-6 bg-amber-100/50 rounded-full group-hover:scale-110 transition-transform pointer-events-none"
-                    ></div>
-
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Low Stock Alert
-                            </p>
-
-                            <h3
-                                class="text-3xl font-black text-amber-600 mt-1"
-                            >
-                                {{ lowStockCount }}
-                            </h3>
-
-                            <p
-                                class="text-xs text-slate-400 mt-1 flex items-center"
-                            >
-                                <i
-                                    class="fa-solid fa-triangle-exclamation text-[10px] mr-1 text-amber-500"
-                                ></i>
-                                At or below reorder level
-                            </p>
-                        </div>
-
-                        <div
-                            class="w-12 h-12 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-xl font-bold border border-amber-200/60 shadow-inner"
-                        >
-                            <i class="fa-solid fa-boxes-packing"></i>
-                        </div>
-                    </div>
+                <nav class="p-3 space-y-2 flex-1">
+                    <button type="button" @click="navigateTo('dashboard')" :class="activePage === 'dashboard' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-boxes-stacked w-5 text-center"></i><span>Dashboard</span></button>
+                    <button type="button" @click="navigateTo('registration-history')" :class="activePage === 'registration-history' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-calendar-days w-5 text-center"></i><span>Inventory Registration History</span></button>
+                    <button type="button" @click="navigateTo('request-history')" :class="activePage === 'request-history' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-file-circle-minus w-5 text-center"></i><span>Inventory Request History</span></button>
+                    <button type="button" @click="navigateTo('item-request-ranking')" :class="activePage === 'item-request-ranking' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-chart-column w-5 text-center"></i><span>Item Request Ranking</span></button>
+                </nav>
+                <div class="mt-auto p-3 border-t border-slate-100">
+                    <button type="button" @click="logout" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-semibold text-sm text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-100 transition-colors"><i class="fa-solid fa-right-from-bracket w-5 text-center"></i><span>Logout</span></button>
                 </div>
+            </aside>
+            <main class="min-w-0 min-h-0 h-full flex-1 overflow-y-auto overscroll-contain max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
 
-                <!-- OUT OF STOCK -->
-                <div
-                    class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
-                >
-                    <div
-                        class="absolute top-0 right-0 w-24 h-24 -mr-6 -mt-6 bg-rose-100/50 rounded-full group-hover:scale-110 transition-transform pointer-events-none"
-                    ></div>
-
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Out of Stock
-                            </p>
-
-                            <h3
-                                class="text-3xl font-black text-rose-600 mt-1"
-                            >
-                                {{ outOfStockCount }}
-                            </h3>
-
-                            <p
-                                class="text-xs text-slate-400 mt-1 flex items-center"
-                            >
-                                <i
-                                    class="fa-solid fa-circle-exclamation text-[10px] mr-1 text-rose-500"
-                                ></i>
-                                Zero balance remaining
-                            </p>
-                        </div>
-
-                        <div
-                            class="w-12 h-12 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center text-xl font-bold border border-rose-200/60 shadow-inner"
-                        >
-                            <i class="fa-solid fa-ban"></i>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- =====================================================
+            <template v-if="activePage === 'dashboard'">
+<!-- =====================================================
                  AVAILABLE INVENTORY
             ====================================================== -->
             <section
@@ -2118,6 +2340,7 @@ function handleImageError(event) {
                     <div
                         class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
                     >
+                       
                         <div class="relative flex-1 sm:w-64">
                             <i
                                 class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"
@@ -2157,6 +2380,17 @@ function handleImageError(event) {
                         </select>
 
                         <button
+                            v-if="selectedStockCardIds.length >= 2"
+                            type="button"
+                            @click="printSelectedStockCards"
+                            class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold shadow-sm transition-colors"
+                            title="Print selected Stock Cards as a multi-page PDF"
+                        >
+                            <i class="fa-solid fa-print"></i>
+                            <span>Print {{ selectedStockCardIds.length }} Stock Cards</span>
+                        </button>
+
+                        <button
                             type="button"
                             @click="printAvailableInventory"
                             class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold shadow-sm transition-colors"
@@ -2165,7 +2399,14 @@ function handleImageError(event) {
                             <i class="fa-solid fa-print"></i>
                             <span>Print / PDF</span>
                         </button>
-
+ <button
+                            type="button"
+                            @click="openAddItemModal"
+                            class="inline-flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 text-white font-semibold px-4 py-2.5 rounded-xl transition-all duration-200 shadow-lg shadow-purple-900/20 focus:ring-2 focus:ring-purple-300 active:scale-95"
+                        >
+                            <i class="fa-solid fa-plus-circle text-lg"></i>
+                            <span>Add New Item</span>
+                        </button>
                         <div
                             class="flex items-center bg-slate-200/80 p-1 rounded-xl"
                         >
@@ -2245,15 +2486,26 @@ function handleImageError(event) {
                                 :key="item.id"
                                 class="hover:bg-slate-50/80 transition-colors border-b border-slate-100"
                             >
-                                <td class="py-3 px-4 text-center">
-                                    <img
-                                        :src="itemImage(item)"
-                                        @error="handleImageError"
-                                        @click="openItemRequestsModal(item)"
-                                        class="w-12 h-12 object-cover rounded-xl border border-slate-200 mx-auto shadow-sm bg-white cursor-pointer hover:opacity-85 transition-opacity"
-                                        alt="Thumbnail"
-                                        title="I-click para makita ang mga nag-request"
-                                    />
+                                <td class="py-3 px-4">
+                                    <div class="flex items-center justify-center gap-2">
+                                        <input
+                                            type="checkbox"
+                                            :checked="selectedStockCardIds.some(id => String(id) === String(item.id))"
+                                            @change="toggleStockCardSelection(item, $event.target.checked)"
+                                            @click.stop
+                                            class="w-4 h-4 accent-purple-700 cursor-pointer"
+                                            :aria-label="`Select Stock Card for ${item.name}`"
+                                            :title="`Select ${item.name} for multi-page Stock Card PDF`"
+                                        />
+                                        <img
+                                            :src="itemImage(item)"
+                                            @error="handleImageError"
+                                            @click="openItemRequestsModal(item)"
+                                            class="w-12 h-12 object-cover rounded-xl border border-slate-200 shadow-sm bg-white cursor-pointer hover:opacity-85 transition-opacity"
+                                            alt="Thumbnail"
+                                            title="I-click para makita ang mga nag-request"
+                                        />
+                                    </div>
                                 </td>
 
                                 <td
@@ -2424,6 +2676,19 @@ function handleImageError(event) {
                                 >
                                     {{ item.propertyNo }}
                                 </span>
+                                <label
+                                    class="absolute top-2 right-2 flex items-center justify-center w-7 h-7 rounded-md bg-white/95 shadow cursor-pointer"
+                                    :title="`Select ${item.name} for multi-page Stock Card PDF`"
+                                    @click.stop
+                                >
+                                    <input
+                                        type="checkbox"
+                                        :checked="selectedStockCardIds.some(id => String(id) === String(item.id))"
+                                        @change="toggleStockCardSelection(item, $event.target.checked)"
+                                        class="w-4 h-4 accent-purple-700 cursor-pointer"
+                                        :aria-label="`Select Stock Card for ${item.name}`"
+                                    />
+                                </label>
 
                                 <div
                                     class="absolute bottom-2 right-2"
@@ -2706,528 +2971,17 @@ function handleImageError(event) {
                     </p>
                 </div>
             </section>
+</template>
 
-<!-- =====================================================
-                 INVENTORY REGISTRATION HISTORY
-            ====================================================== -->
-            <section
-                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
-            >
-                <div
-                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
-                >
-                    <div
-                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
-                    >
-                        <div>
-                            <div class="flex items-center space-x-2">
-                                <div
-                                    class="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center"
-                                >
-                                    <i class="fa-solid fa-calendar-days"></i>
-                                </div>
+            <InventoryRegistrationHistory v-else-if="activePage === 'registration-history'" :state="pageState" />
+            <InventoryRequestHistory v-else-if="activePage === 'request-history'" :state="pageState" />
+            <ItemRequestRanking v-else-if="activePage === 'item-request-ranking'" />
 
-                                <div>
-                                    <h2 class="text-lg font-bold text-slate-800">
-                                        Inventory Registration History
-                                    </h2>
 
-                                    <p class="text-xs text-slate-500 mt-0.5">
-                                        View all inventory items registered on a specific date.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
 
-                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
-                            <label
-                                for="registration-date"
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Select Date
-                            </label>
 
-                            <div class="relative">
-                                <i
-                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-purple-500 text-sm pointer-events-none"
-                                ></i>
-
-                                <input
-                                    id="registration-date"
-                                    v-model="selectedRegistrationDate"
-                                    type="date"
-                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm"
-                                />
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="px-5 sm:px-6 pt-4">
-                    <label for="registration-item-search" class="sr-only">
-                        Search registration history items
-                    </label>
-                    <div class="relative max-w-md">
-                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none"></i>
-                        <input
-                            id="registration-item-search"
-                            v-model="registrationSearch"
-                            type="search"
-                            placeholder="Search item name, property number, category..."
-                            class="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                        />
-                    </div>
-                </div>
-
-                <div
-                    class="px-5 sm:px-6 py-4 border-b border-slate-100 bg-purple-50/40"
-                >
-                    <div
-                        class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
-                    >
-                        <div>
-                            <p class="text-xs font-bold uppercase tracking-wider text-purple-600">
-                                Registered Items
-                            </p>
-
-                            <h3 class="text-lg sm:text-xl font-black text-slate-800 mt-0.5">
-                                Items Registered on {{ formattedRegistrationDate }}
-                            </h3>
-                        </div>
-
-                        <div class="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-                            <div
-                                class="inline-flex items-center gap-2 bg-white border border-purple-200 text-purple-800 px-3 py-2 rounded-xl shadow-sm"
-                            >
-                                <i class="fa-solid fa-box-open text-purple-600"></i>
-                                <span class="text-sm font-bold">
-                                    {{ registrationCount }}
-                                    {{ registrationCount === 1 ? 'Item' : 'Items' }}
-                                </span>
-                            </div>
-
-                            <button
-                                type="button"
-                                @click="exportRegistrationHistoryToExcel"
-                                :disabled="registrationLoading || registeredItems.length === 0"
-                                title="Export registration history records from all dates to Excel-compatible CSV"
-                                class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                <i class="fa-solid fa-file-excel"></i>
-                                Export Excel
-                            </button>
-
-                            <button
-                                type="button"
-                                @click="printRegistrationHistory"
-                                :disabled="registrationLoading || registeredItems.length === 0"
-                                title="Print registration history records from all dates"
-                                class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-purple-600 text-white text-sm font-semibold shadow-sm hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                <i class="fa-solid fa-print"></i>
-                                Print
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <div
-                    v-if="registrationLoading"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 text-purple-600 mb-3"
-                    >
-                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-slate-600">
-                        Loading registered items...
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="registrationError"
-                    class="px-6 py-10 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
-                    >
-                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-rose-700">
-                        {{ registrationError }}
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="registeredItems.length === 0"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
-                    >
-                        <i class="fa-solid fa-calendar-xmark text-2xl"></i>
-                    </div>
-
-                    <h3 class="text-base font-bold text-slate-700">
-                        No Items Registered
-                    </h3>
-
-                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
-                        No inventory items were registered on {{ formattedRegistrationDate }}.
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="filteredRegisteredItems.length === 0"
-                    class="px-6 py-10 text-center"
-                >
-                    <i class="fa-solid fa-magnifying-glass text-2xl text-slate-300 mb-3"></i>
-                    <p class="text-sm font-semibold text-slate-600">No matching items found</p>
-                    <p class="text-xs text-slate-400 mt-1">Try another item name, property number, or category.</p>
-                </div>
-
-                <div v-else class="max-h-[230px] overflow-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100">
-                    <table class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="bg-slate-50 border-b border-slate-200">
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Qty
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Property Number
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Item Name
-                                </th>
-                            </tr>
-                        </thead>
-
-                        <tbody class="divide-y divide-slate-100">
-                            <tr
-                                v-for="item in filteredRegisteredItems"
-                                :key="item.id"
-                                class="hover:bg-purple-50/40 transition-colors"
-                            >
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span
-                                        class="inline-flex items-center justify-center min-w-[42px] px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 text-sm font-black border border-purple-200"
-                                    >
-                                        {{ item.registeredQty }}
-                                    </span>
-
-                                    <span class="ml-2 text-xs text-slate-400">
-                                        {{ item.unit }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span class="font-mono text-sm font-bold text-slate-700">
-                                        {{ item.propertyNo }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4">
-                                    <div class="flex items-center gap-3">
-                                        <img
-                                            :src="itemImage(item)"
-                                            :alt="item.name"
-                                            @error="handleImageError"
-                                            class="w-10 h-10 rounded-lg object-cover border border-slate-200 bg-slate-50"
-                                        />
-
-                                        <div>
-                                            <p class="text-sm font-bold text-slate-800">
-                                                {{ item.name }}
-                                            </p>
-
-                                            <p class="text-xs text-slate-400 mt-0.5">
-                                                {{ item.category }}
-                                            </p>
-                                            <p class="text-xs text-purple-700 font-semibold mt-1">
-                                                IAR No.: {{ item.iarNumber || 'Not set' }}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-
-<!-- =====================================================
-                 INVENTORY REQUEST HISTORY
-            ====================================================== -->
-            <section
-                class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden"
-            >
-                <div
-                    class="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50"
-                >
-                    <div
-                        class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5"
-                    >
-                        <div>
-                            <div class="flex items-center space-x-2">
-                                <div
-                                    class="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center"
-                                >
-                                    <i class="fa-solid fa-file-circle-minus"></i>
-                                </div>
-
-                                <div>
-                                    <h2 class="text-lg font-bold text-slate-800">
-                                        Inventory Request History
-                                    </h2>
-
-                                    <p class="text-xs text-slate-500 mt-0.5">
-                                        View all inventory requests recorded on the selected date.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div
-                            class="inline-flex items-center self-start lg:self-auto gap-2 bg-white border border-rose-200 text-rose-800 px-3 py-2 rounded-xl shadow-sm"
-                        >
-                            <i class="fa-solid fa-clipboard-list text-rose-600"></i>
-
-                            <span class="text-sm font-bold">
-                                {{ requestCount }}
-                                {{ requestCount === 1 ? 'Request' : 'Requests' }}
-                            </span>
-                        </div>
-                    </div>
-
-                    <div
-                        class="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-rose-50/60 border border-rose-100 rounded-xl px-4 py-3"
-                    >
-                        <div class="flex items-center gap-2 min-w-0">
-                            <i class="fa-solid fa-calendar-day text-rose-600"></i>
-                            <span class="text-xs font-bold uppercase tracking-wider text-rose-600">
-                                Request Date
-                            </span>
-                            <span class="text-sm font-black text-slate-800 truncate">
-                                {{ formattedRequestDate }}
-                            </span>
-                        </div>
-
-                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
-                            <label
-                                for="request-date"
-                                class="text-xs font-bold uppercase tracking-wider text-slate-500"
-                            >
-                                Select Date
-                            </label>
-
-                            <div class="relative">
-                                <i
-                                    class="fa-solid fa-calendar absolute left-3 top-1/2 -translate-y-1/2 text-rose-500 text-sm pointer-events-none"
-                                ></i>
-
-                                <input
-                                    id="request-date"
-                                    v-model="selectedRequestDate"
-                                    type="date"
-                                    class="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent shadow-sm"
-                                />
-                            </div>
-
-                            <button
-                                type="button"
-                                @click="printRequestHistory"
-                                :disabled="requestLoading || requestItems.length === 0"
-                                title="Print or save request history as PDF"
-                                aria-label="Print or save request history as PDF"
-                                class="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-rose-600 text-white shadow-sm transition hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600"
-                            >
-                                <i class="fa-solid fa-print text-base"></i>
-                            </button>
-
-                            <span
-                                v-if="requestCount > 3"
-                                class="hidden lg:inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500"
-                            >
-                                <i class="fa-solid fa-arrows-up-down text-rose-500"></i>
-                                Scroll to view all requests
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
-                <div
-                    v-if="requestLoading"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
-                    >
-                        <i class="fa-solid fa-spinner fa-spin text-xl"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-slate-600">
-                        Loading inventory requests...
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="requestError"
-                    class="px-6 py-10 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mb-3"
-                    >
-                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
-                    </div>
-
-                    <p class="text-sm font-semibold text-rose-700">
-                        {{ requestError }}
-                    </p>
-                </div>
-
-                <div
-                    v-else-if="requestItems.length === 0"
-                    class="px-6 py-12 text-center"
-                >
-                    <div
-                        class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 mb-4"
-                    >
-                        <i class="fa-solid fa-clipboard-list text-2xl"></i>
-                    </div>
-
-                    <h3 class="text-base font-bold text-slate-700">
-                        No Inventory Requests
-                    </h3>
-
-                    <p class="text-sm text-slate-400 mt-1 max-w-md mx-auto">
-                        No inventory requests were recorded on {{ formattedRequestDate }}.
-                    </p>
-                </div>
-
-                <div
-                    v-else
-                    class="max-h-[230px] min-h-[205px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
-                >
-                    <table class="w-full min-w-[900px] text-left border-collapse">
-                        <thead class="sticky top-0 z-10">
-                            <tr class="bg-slate-50 border-b border-slate-200 shadow-sm">
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Time
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Requestor / Name
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Department / Office
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Reference No. / Source
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Property Number
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                                    Item Name
-                                </th>
-
-                                <th class="px-5 sm:px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 text-right">
-                                    Requested
-                                </th>
-                            </tr>
-                        </thead>
-
-                        <tbody class="divide-y divide-slate-100">
-                            <tr
-                                v-for="request in requestItems"
-                                :key="request.id"
-                                class="hover:bg-rose-50/40 transition-colors"
-                            >
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <div class="flex items-center gap-2">
-                                        <span
-                                            class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-rose-100 text-rose-700 border border-rose-200"
-                                        >
-                                            <i class="fa-solid fa-clock text-xs"></i>
-                                        </span>
-                                        <span class="text-xs font-bold text-slate-600">
-                                            {{ formatRequestTime(request.requestedAt) }}
-                                        </span>
-                                    </div>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4">
-                                    <p class="text-sm font-bold text-slate-800">
-                                        {{ request.requestorName }}
-                                    </p>
-                                    <p class="text-[11px] text-slate-400 mt-0.5">
-                                        {{ request.requestDate }}
-                                    </p>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span
-                                        class="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold"
-                                    >
-                                        {{ request.departmentOffice }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4">
-                                    <span class="text-xs text-slate-600">
-                                        {{ request.referenceNoSource || '-' }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4 whitespace-nowrap">
-                                    <span class="font-mono text-xs font-bold text-slate-700">
-                                        {{ request.propertyNo }}
-                                    </span>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4">
-                                    <div class="flex items-center gap-3">
-                                        <div
-                                            class="w-9 h-9 rounded-lg bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center flex-shrink-0"
-                                        >
-                                            <i class="fa-solid fa-box-open text-sm"></i>
-                                        </div>
-                                        <div>
-                                            <p class="text-sm font-bold text-slate-800">
-                                                {{ request.itemName }}
-                                            </p>
-                                            <p class="text-xs text-slate-400 mt-0.5">
-                                                {{ request.unit }}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </td>
-
-                                <td class="px-5 sm:px-6 py-4 text-right whitespace-nowrap">
-                                    <span
-                                        class="inline-flex items-center justify-center min-w-[48px] px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 text-sm font-black border border-rose-200"
-                                    >
-                                        {{ request.requestedQuantity }}
-                                    </span>
-                                    <span class="ml-1 text-xs text-slate-400">
-                                        {{ request.unit }}
-                                    </span>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        </main>
+            </main>
+        </div>
 
         <!-- =========================================================
              FOOTER
@@ -3246,7 +3000,7 @@ function handleImageError(event) {
                     <span
                         class="font-semibold text-slate-700"
                     >
-                        Material Management Office (MMO) Portal
+                        Materials Management Section 
                     </span>
                 </div>
 
@@ -3562,209 +3316,105 @@ function handleImageError(event) {
         </div>
 
         <!-- =========================================================
-             INVENTORY REQUEST MODAL
+             MULTI-ITEM INVENTORY REQUEST MODAL
         ========================================================== -->
         <div
             v-if="showRequestModal"
-            class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center"
+            class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-3"
             @click.self="closeRequestModal"
         >
-            <div
-                class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-lg w-full mx-4 overflow-hidden"
-            >
-                <div
-                    class="bg-gradient-to-r from-rose-700 to-rose-600 px-6 py-4 text-white flex justify-between items-center"
-                >
+            <div class="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-2xl w-full mx-4 overflow-hidden max-h-[92vh] flex flex-col">
+                <div class="bg-gradient-to-r from-rose-700 to-rose-600 px-6 py-4 text-white flex justify-between items-center">
                     <div class="flex items-center space-x-2">
                         <i class="fa-solid fa-file-circle-minus text-rose-200 text-lg"></i>
                         <div>
-                            <h3 class="font-bold text-base text-white">
-                                Inventory Request
-                            </h3>
-                            <p class="text-[11px] text-rose-100 mt-0.5">
-                                Record an office request and deduct it from available stock.
-                            </p>
+                            <h3 class="font-bold text-base text-white">Inventory Request</h3>
+                            <p class="text-[11px] text-rose-100 mt-0.5">Request several inventory items in one form.</p>
                         </div>
                     </div>
-
-                    <button
-                        type="button"
-                        @click="closeRequestModal"
-                        :disabled="isSubmittingRequest"
-                        class="text-rose-100 hover:text-white bg-rose-800/40 hover:bg-rose-800/70 p-1.5 rounded-xl transition-colors disabled:opacity-50"
-                    >
+                    <button type="button" @click="closeRequestModal" :disabled="isSubmittingRequest" class="text-rose-100 hover:text-white bg-rose-800/40 hover:bg-rose-800/70 p-1.5 rounded-xl transition-colors disabled:opacity-50">
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
 
-                <form
-                    @submit.prevent="submitInventoryRequest"
-                    class="p-6 space-y-4"
-                >
-                    <div
-                        class="bg-rose-50 p-4 rounded-2xl border border-rose-100"
-                    >
-                        <div class="flex items-center justify-between gap-3">
-                            <div>
-                                <p class="text-[10px] font-bold uppercase tracking-wider text-rose-600">
-                                    Requested Item
-                                </p>
-                                <p class="text-sm font-black text-slate-800 mt-0.5">
-                                    {{ requestForm.itemName }}
-                                </p>
-                            </div>
-
-                            <div class="text-right">
-                                <p class="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                    Available
-                                </p>
-                                <p class="text-sm font-black text-emerald-700">
-                                    {{
-                                        inventory.find(
-                                            (row) => row.id === requestForm.itemId,
-                                        )?.quantity ?? 0
-                                    }}
-                                    {{
-                                        inventory.find(
-                                            (row) => row.id === requestForm.itemId,
-                                        )?.unit ?? ''
-                                    }}
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Requestor / Name *
-                        </label>
-                        <input
-                            v-model="requestForm.requestorName"
-                            type="text"
-                            required
-                            autocomplete="name"
-                            placeholder="e.g. Juan Dela Cruz"
-                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
-                    </div>
-
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Department / Office *
-                        </label>
-                        <select
-                            v-model="requestForm.departmentOffice"
-                            required
-                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        >
-                            <option value="" disabled>
-                                Select department / office
-                            </option>
-                            <option
-                                v-for="department in departments"
-                                :key="department"
-                                :value="department"
-                            >
-                                {{ department }}
-                            </option>
-                        </select>
-                    </div>
-
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Reference No. / Source
-                        </label>
-                        <input
-                            v-model="requestForm.referenceNoSource"
-                            type="text"
-                            placeholder="e.g. RIS No. / Office Memo / Source"
-                            class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
-                    </div>
-
-                    <div>
-                        <label
-                            class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                        >
-                            Item Name *
-                        </label>
-                        <input
-                            v-model="requestForm.itemName"
-                            type="text"
-                            readonly
-                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700"
-                        />
-                    </div>
-
+                <form @submit.prevent="submitInventoryRequest" class="p-6 space-y-4 overflow-y-auto">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                            <label
-                                class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                            >
-                                Quantity / Number Requested *
-                            </label>
-                            <input
-                                v-model.number="requestForm.quantity"
-                                type="number"
-                                min="1"
-                                :max="inventory.find((row) => row.id === requestForm.itemId)?.quantity ?? 1"
-                                required
-                                class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                            />
+                            <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Requestor / Name *</label>
+                            <input v-model="requestForm.requestorName" type="text" required autocomplete="name" placeholder="e.g. Juan Dela Cruz" class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500" />
                         </div>
-
                         <div>
-                            <label
-                                class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1"
-                            >
-                                Request Date *
-                            </label>
-                            <input
-                                v-model="requestForm.requestDate"
-                                type="date"
-                                required
-                                class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                            />
+                            <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Department / Office *</label>
+                            <select v-model="requestForm.departmentOffice" required class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500">
+                                <option value="" disabled>Select department / office</option>
+                                <option v-for="department in departments" :key="department" :value="department">{{ department }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Reference No. / Source</label>
+                            <input v-model="requestForm.referenceNoSource" type="text" placeholder="e.g. RIS No. / Office Memo / Source" class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Request Date *</label>
+                            <input v-model="requestForm.requestDate" type="date" required class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500" />
                         </div>
                     </div>
 
-                    <div
-                        class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3.5 py-3 text-xs font-semibold"
-                    >
-                        <i class="fa-solid fa-circle-info mr-1"></i>
-                        Submitting this request will permanently record the request
-                        and deduct the requested quantity from available inventory.
+                    <div class="rounded-2xl border border-rose-100 bg-rose-50 p-4 space-y-3">
+                        <div>
+                            <p class="text-xs font-bold uppercase tracking-wider text-rose-700">Add another item</p>
+                            <p class="text-xs text-slate-600 mt-1">Pumili ng item at idagdag sa listahan. Maaari kang mag-request ng maraming item sa iisang form.</p>
+                        </div>
+                        <div class="flex flex-col sm:flex-row gap-2">
+                            <select v-model="selectedRequestItemId" class="flex-1 min-w-0 px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500">
+                                <option value="">Select an available item...</option>
+                                <option v-for="item in requestableItems" :key="item.id" :value="String(item.id)">
+                                    {{ item.name }} — {{ item.quantity }} {{ item.unit }} available
+                                </option>
+                            </select>
+                            <button type="button" @click="addRequestItem" :disabled="!selectedRequestItemId || isSubmittingRequest" class="px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold disabled:opacity-50">
+                                <i class="fa-solid fa-plus mr-1"></i> Add Item
+                            </button>
+                        </div>
                     </div>
 
-                    <div
-                        class="pt-4 flex justify-end space-x-3 border-t border-slate-100"
-                    >
-                        <button
-                            type="button"
-                            @click="closeRequestModal"
-                            :disabled="isSubmittingRequest"
-                            class="px-5 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors disabled:opacity-50"
-                        >
-                            Cancel
-                        </button>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <h4 class="text-sm font-black text-slate-800">Items to Request</h4>
+                            <span class="text-xs font-bold text-rose-700 bg-rose-50 border border-rose-100 rounded-full px-3 py-1">{{ requestForm.items.length }} item(s)</span>
+                        </div>
 
-                        <button
-                            type="submit"
-                            :disabled="isSubmittingRequest"
-                            class="px-6 py-2.5 bg-gradient-to-r from-rose-700 to-rose-600 hover:from-rose-600 hover:to-rose-500 text-white rounded-xl text-xs font-bold shadow-md transition-all disabled:opacity-60"
-                        >
+                        <div v-if="requestForm.items.length === 0" class="text-center border border-dashed border-slate-300 rounded-xl p-6 text-sm text-slate-500">
+                            Wala pang item sa request. Pumili ng item sa itaas at i-click ang Add Item.
+                        </div>
+
+                        <div v-for="(requested, index) in requestForm.items" :key="requested.itemId" class="border border-slate-200 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-bold text-slate-800 break-words">{{ requested.itemName }}</p>
+                                <p class="text-xs text-slate-500 mt-0.5">Stock No.: {{ requested.propertyNo || '-' }} · Available: {{ inventory.find((row) => String(row.id) === String(requested.itemId))?.quantity ?? 0 }} {{ requested.unit }}</p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Quantity</label>
+                                    <input v-model.number="requested.quantity" type="number" min="1" :max="inventory.find((row) => String(row.id) === String(requested.itemId))?.quantity ?? 1" required class="w-24 px-3 py-2 border border-slate-200 rounded-lg text-sm font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500" />
+                                </div>
+                                <button type="button" @click="removeRequestItem(index)" :disabled="isSubmittingRequest" title="Remove item" class="mt-4 p-2 rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-50">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3.5 py-3 text-xs font-semibold">
+                        <i class="fa-solid fa-circle-info mr-1"></i>
+                        Ang bawat item ay ise-save bilang sariling request record, gamit ang parehong requestor name, department, reference at date. Ibabawas ang bawat quantity sa stock ng katumbas na item.
+                    </div>
+
+                    <div class="pt-4 flex justify-end space-x-3 border-t border-slate-100">
+                        <button type="button" @click="closeRequestModal" :disabled="isSubmittingRequest" class="px-5 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors disabled:opacity-50">Cancel</button>
+                        <button type="submit" :disabled="isSubmittingRequest || requestForm.items.length === 0" class="px-6 py-2.5 bg-gradient-to-r from-rose-700 to-rose-600 hover:from-rose-600 hover:to-rose-500 text-white rounded-xl text-xs font-bold shadow-md transition-all disabled:opacity-60">
                             <i class="fa-solid fa-paper-plane mr-1.5"></i>
-                            {{
-                                isSubmittingRequest
-                                    ? 'Recording...'
-                                    : 'Submit Request'
-                            }}
+                            {{ isSubmittingRequest ? 'Recording...' : `Submit ${requestForm.items.length} Item(s)` }}
                         </button>
                     </div>
                 </form>
