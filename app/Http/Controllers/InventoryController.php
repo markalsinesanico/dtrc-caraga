@@ -10,13 +10,41 @@ use Illuminate\Support\Facades\DB;
 
 class InventoryController extends Controller
 {
-    public function index()
+    /*
+    |--------------------------------------------------------------------------
+    | Check Admin Access
+    |--------------------------------------------------------------------------
+    */
+    private function requireAdmin(Request $request): void
     {
-        return response()->json(Inventory::orderBy('name')->get());
+        abort_unless(
+            $request->user() && $request->user()->role === 'admin',
+            403,
+            'Only administrators can perform this action.'
+        );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Inventory List
+    |--------------------------------------------------------------------------
+    */
+    public function index()
+    {
+        return response()->json(
+            Inventory::orderBy('name')->get()
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Registration History - Admin Only
+    |--------------------------------------------------------------------------
+    */
     public function registrationHistory(Request $request)
     {
+        $this->requireAdmin($request);
+
         $validated = $request->validate([
             'date' => ['nullable', 'date_format:Y-m-d'],
         ]);
@@ -32,7 +60,9 @@ class InventoryController extends Controller
             ->orderByDesc('id')
             ->get();
 
-        return response()->json($history->map(function (InventoryRegistrationHistory $item) {
+        return response()->json($history->map(function (
+            InventoryRegistrationHistory $item
+        ) {
             return [
                 'id' => $item->id,
                 'inventory_id' => $item->inventory_id,
@@ -52,13 +82,35 @@ class InventoryController extends Controller
         }));
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Request History
+    |--------------------------------------------------------------------------
+    | Admin: can see all offices.
+    | Office: can only see its own assigned office.
+    */
     public function requestHistory(Request $request)
     {
         $validated = $request->validate([
             'date' => ['nullable', 'date_format:Y-m-d'],
         ]);
 
+        $user = $request->user();
+
         $query = InventoryRequest::query();
+
+        if ($user->role !== 'admin') {
+            abort_if(
+                empty($user->department_office),
+                403,
+                'Your account has no assigned office.'
+            );
+
+            $query->where(
+                'department_office',
+                $user->department_office
+            );
+        }
 
         if (!empty($validated['date'])) {
             $query->whereDate('request_date', $validated['date']);
@@ -70,7 +122,9 @@ class InventoryController extends Controller
             ->orderByDesc('id')
             ->get();
 
-        return response()->json($requests->map(function (InventoryRequest $item) {
+        return response()->json($requests->map(function (
+            InventoryRequest $item
+        ) {
             return [
                 'id' => $item->id,
                 'inventory_id' => $item->inventory_id,
@@ -88,10 +142,22 @@ class InventoryController extends Controller
         }));
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Add New Inventory Item - Admin Only
+    |--------------------------------------------------------------------------
+    */
     public function store(Request $request)
     {
+        $this->requireAdmin($request);
+
         $validated = $request->validate([
-            'property_no' => ['required', 'string', 'max:255', 'unique:inventories,property_no'],
+            'property_no' => [
+                'required',
+                'string',
+                'max:255',
+                'unique:inventories,property_no',
+            ],
             'iar_number' => ['nullable', 'string', 'max:255'],
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:2000'],
@@ -130,29 +196,67 @@ class InventoryController extends Controller
         ], 201);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Submit Item Request
+    |--------------------------------------------------------------------------
+    | Admin: uses department_office from the existing Admin form.
+    | Office: uses department_office from the logged-in account.
+    | Stock is deducted only after the request is successfully saved.
+    */
     public function requestItem(Request $request)
     {
+        $user = $request->user();
+
         $validated = $request->validate([
             'requestor_name' => ['required', 'string', 'max:255'],
-            'department_office' => ['required', 'string', 'max:255'],
             'reference_no_source' => ['nullable', 'string', 'max:255'],
             'inventory_id' => ['required', 'integer', 'exists:inventories,id'],
             'quantity' => ['required', 'integer', 'min:1'],
             'request_date' => ['required', 'date_format:Y-m-d'],
         ]);
 
-        $result = DB::transaction(function () use ($validated) {
-            $inventory = Inventory::lockForUpdate()->findOrFail($validated['inventory_id']);
+        if ($user->role === 'admin') {
+            $departmentData = $request->validate([
+                'department_office' => [
+                    'required',
+                    'string',
+                    'max:255',
+                ],
+            ]);
+
+            $departmentOffice = $departmentData['department_office'];
+        } else {
+            abort_if(
+                empty($user->department_office),
+                403,
+                'Your account has no assigned office. Please contact the administrator.'
+            );
+
+            // Never trust the department_office sent by an Office user's browser.
+            $departmentOffice = $user->department_office;
+        }
+
+        $result = DB::transaction(function () use (
+            $validated,
+            $departmentOffice
+        ) {
+            $inventory = Inventory::lockForUpdate()
+                ->findOrFail($validated['inventory_id']);
+
             $quantity = (int) $validated['quantity'];
 
             if ($quantity > $inventory->quantity) {
-                abort(422, "Insufficient stock. Only {$inventory->quantity} {$inventory->unit} available.");
+                abort(
+                    422,
+                    "Insufficient stock. Only {$inventory->quantity} {$inventory->unit} available."
+                );
             }
 
             $inventoryRequest = InventoryRequest::create([
                 'inventory_id' => $inventory->id,
                 'requestor_name' => $validated['requestor_name'],
-                'department_office' => $validated['department_office'],
+                'department_office' => $departmentOffice,
                 'reference_no_source' => $validated['reference_no_source'] ?? null,
                 'property_no' => $inventory->property_no,
                 'item_name' => $inventory->name,
@@ -162,7 +266,7 @@ class InventoryController extends Controller
                 'requested_at' => now(),
             ]);
 
-            // Keep the existing behavior: recording a request deducts available stock.
+            // Preserve existing behavior: deduct the requested quantity.
             $inventory->quantity -= $quantity;
             $inventory->save();
 
@@ -178,13 +282,25 @@ class InventoryController extends Controller
         ], 201);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | View Single Inventory Item
+    |--------------------------------------------------------------------------
+    */
     public function show(Inventory $inventory)
     {
         return response()->json($inventory);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Update Inventory Item - Admin Only
+    |--------------------------------------------------------------------------
+    */
     public function update(Request $request, Inventory $inventory)
     {
+        $this->requireAdmin($request);
+
         $validated = $request->validate([
             'property_no' => [
                 'required',
@@ -210,8 +326,15 @@ class InventoryController extends Controller
         ]);
     }
 
-    public function destroy(Inventory $inventory)
+    /*
+    |--------------------------------------------------------------------------
+    | Delete Inventory Item - Admin Only
+    |--------------------------------------------------------------------------
+    */
+    public function destroy(Request $request, Inventory $inventory)
     {
+        $this->requireAdmin($request);
+
         $inventory->delete();
 
         return response()->json([

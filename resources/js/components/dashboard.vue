@@ -1,18 +1,16 @@
-Dashboard.vue
-Dashboard.vue
-
 <script setup>
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import InventoryRegistrationHistory from './InventoryRegistrationHistory.vue'
 import InventoryRequestHistory from './InventoryRequestHistory.vue'
 import ItemRequestRanking from './ItemRequestRanking.vue'
+import ManageAccounts from './ManageAccounts.vue'
 import axios from 'axios'
 import logo from '../assets/logo.jpg'
 
 const activePage = ref('dashboard')
 
 function navigateTo(page) {
-    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking']
+    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking', 'manage-accounts']
     if (!allowedPages.includes(page)) return
     activePage.value = page
     const nextHash = `#${page}`
@@ -21,7 +19,7 @@ function navigateTo(page) {
 
 function syncPageFromHash() {
     const page = window.location.hash.replace(/^#/, '')
-    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking']
+    const allowedPages = ['dashboard', 'registration-history', 'request-history', 'item-request-ranking', 'manage-accounts']
     activePage.value = allowedPages.includes(page) ? page : 'dashboard'
 }
 
@@ -2280,6 +2278,7 @@ const pageState = reactive({
                 <button type="button" @click="navigateTo('registration-history')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'registration-history' ? 'bg-purple-700' : 'bg-purple-900'">Registration History</button>
                 <button type="button" @click="navigateTo('request-history')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'request-history' ? 'bg-purple-700' : 'bg-purple-900'">Request History</button>
                 <button type="button" @click="navigateTo('item-request-ranking')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'item-request-ranking' ? 'bg-purple-700' : 'bg-purple-900'">Item Request Ranking</button>
+                <button type="button" @click="navigateTo('manage-accounts')" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white" :class="activePage === 'manage-accounts' ? 'bg-purple-700' : 'bg-purple-900'">Manage Accounts</button>
                 <button type="button" @click="logout" class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800"><i class="fa-solid fa-right-from-bracket mr-1"></i>Logout</button>
             </div>
         </header>
@@ -2298,6 +2297,7 @@ const pageState = reactive({
                     <button type="button" @click="navigateTo('registration-history')" :class="activePage === 'registration-history' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-calendar-days w-5 text-center"></i><span>Inventory Registration History</span></button>
                     <button type="button" @click="navigateTo('request-history')" :class="activePage === 'request-history' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-file-circle-minus w-5 text-center"></i><span>Inventory Request History</span></button>
                     <button type="button" @click="navigateTo('item-request-ranking')" :class="activePage === 'item-request-ranking' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-chart-column w-5 text-center"></i><span>Item Request Ranking</span></button>
+                    <button type="button" @click="navigateTo('manage-accounts')" :class="activePage === 'manage-accounts' ? 'bg-purple-100 text-purple-900 border-purple-200' : 'text-slate-600 border-transparent hover:bg-slate-50'" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left font-semibold text-sm transition-colors"><i class="fa-solid fa-users-gear w-5 text-center"></i><span>Manage Office Accounts</span></button>
                 </nav>
                 <div class="mt-auto p-3 border-t border-slate-100">
                     <button type="button" @click="logout" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-semibold text-sm text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-100 transition-colors"><i class="fa-solid fa-right-from-bracket w-5 text-center"></i><span>Logout</span></button>
@@ -2976,6 +2976,7 @@ const pageState = reactive({
             <InventoryRegistrationHistory v-else-if="activePage === 'registration-history'" :state="pageState" />
             <InventoryRequestHistory v-else-if="activePage === 'request-history'" :state="pageState" />
             <ItemRequestRanking v-else-if="activePage === 'item-request-ranking'" />
+            <ManageAccounts v-else-if="activePage === 'manage-accounts'" />
 
 
 
